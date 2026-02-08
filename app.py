@@ -1,5 +1,6 @@
 # app.py
 # IH + RLV Calculator (Cape Town-style feasibility) — FULL PATCHED SINGLE FILE
+# ✅ Fixes Streamlit dataclass mutable default error (default_factory)
 # ✅ Fixes log spam: disables ALL print() output under Streamlit
 # ✅ Implements the 6 “real-world” tweaks:
 #   1) Contingency + escalation on construction
@@ -12,8 +13,8 @@
 # ✅ Backwards-compatible: if split rates are 0 but legacy finance_marketing_rate > 0, uses legacy gdv*rate
 
 import builtins
-from dataclasses import dataclass, asdict
-from typing import Dict, Any, Optional, Literal
+from dataclasses import dataclass, asdict, field
+from typing import Dict, Any, Literal
 
 import streamlit as st
 
@@ -91,9 +92,9 @@ class Assumptions:
     # Inputs
     plot_size_m2: float = 1000.0
     exit_price_psm: float = 45000.0      # market price (R/m² sellable)
-    build_cost_psm: float = 18000.0      # hard cost (R/m² bulk or sellable? we apply on bulk)
-    zoning: ZoningRules = ZoningRules()
-    overlays: Overlays = Overlays()
+    build_cost_psm: float = 18000.0      # hard cost (R/m² bulk)
+    zoning: ZoningRules = field(default_factory=ZoningRules)     # ✅ FIX
+    overlays: Overlays = field(default_factory=Overlays)         # ✅ FIX
 
     # Professional fees etc.
     professional_fees_rate: float = 0.10  # % of build cost
@@ -266,14 +267,12 @@ def calculate_rlv(a: Assumptions) -> Dict[str, Any]:
     if a.include_acquisition_costs:
         acq_rate = max(0.0, _safe_num(a.acquisition_cost_rate, 0.08))
         acq_fixed = max(0.0, _safe_num(a.acquisition_cost_fixed, 0.0))
-        # If RLV is negative, acquisition costs should not make it "more negative" in decisioning.
-        # Treat max offer as 0 for acquisition calc.
         land_offer_proxy = max(0.0, residual_land_value)
         acquisition_costs = (land_offer_proxy * acq_rate) + acq_fixed
 
     audit["acquisition_costs"] = acquisition_costs
 
-    # Max offer outputs (preserve style you had in logs)
+    # Max offer outputs
     max_offer_before_acquisition = residual_land_value
     max_offer_after_acquisition = residual_land_value - acquisition_costs
 
@@ -309,7 +308,6 @@ def feasibility_lens_cards(local_comps: str, bulk_eff: str, coastal_premium: str
 
 def render_audit(audit: Dict[str, Any]) -> None:
     st.markdown("### Audit Trail")
-    # Keep predictable order for key items, then show the rest
     key_order = [
         "gross_bulk_m2",
         "sellable_area_m2",
@@ -341,13 +339,10 @@ def render_audit(audit: Dict[str, Any]) -> None:
     for k in key_order:
         if k in audit:
             rows.append((k, audit[k]))
-
-    # append remaining keys (if any)
     for k in audit.keys():
         if k not in {x for x, _ in rows}:
             rows.append((k, audit[k]))
 
-    # render in a clean two-column dataframe-like table
     import pandas as pd
 
     df = pd.DataFrame(rows, columns=["Key", "Value"])
@@ -363,7 +358,6 @@ def main() -> None:
     st.title("IH + RLV Calculator (Cape Town Feasibility)")
     st.caption("Residual Land Value with Inclusionary Housing + real-world feasibility patches.")
 
-    # --- Sidebar inputs ---
     st.sidebar.header("Inputs")
 
     plot_size = st.sidebar.number_input("Plot Size (m²)", min_value=0.0, value=1000.0, step=50.0)
@@ -409,7 +403,6 @@ def main() -> None:
     acq_rate = st.sidebar.slider("Acquisition cost rate (% of land)", 0.0, 0.20, 0.08, 0.005)
     acq_fixed = st.sidebar.number_input("Acquisition fixed (R)", min_value=0.0, value=0.0, step=10000.0)
 
-    # --- Build assumptions object ---
     z = ZoningRules(
         floor_factor=floor_factor,
         efficiency=efficiency,
@@ -447,18 +440,15 @@ def main() -> None:
         acquisition_cost_fixed=acq_fixed,
     )
 
-    # --- Calculate ---
     result = calculate_rlv(a)
     audit = result["audit"]
     outputs = result["outputs"]
 
-    # --- Main layout ---
     left, right = st.columns([1.2, 1.0], gap="large")
 
     with left:
         st.markdown("## Dashboard")
 
-        # Feasibility lens cards (you can wire these to real datasets later)
         feasibility_lens_cards(
             local_comps='Recent sales in this sub-zone: R42,000/m².',
             bulk_eff=f'You can build ~{int(round(outputs["gross_bulk_m2"], 0)):,}m² on this plot at FAR {floor_factor:.2f}.'.replace(",", " "),
@@ -472,7 +462,6 @@ def main() -> None:
         c3.metric("Max Offer (before acquisition)", _money(outputs["max_offer_before_acquisition"]))
         c4.metric("Max Offer (after acquisition)", _money(outputs["max_offer_after_acquisition"]))
 
-        # Guardrails
         if outputs["max_offer_after_acquisition"] < 0:
             st.error(
                 "Residual is negative. This scheme is not feasible at the current assumptions "

@@ -12,7 +12,6 @@
 # ✅ Preserves existing audit structure/keys and keeps legacy "finance_marketing" key
 # ✅ Backwards-compatible: if split rates are 0 but legacy finance_marketing_rate > 0, uses legacy gdv*rate
 
-from __future__ import annotations
 
 import builtins
 from dataclasses import dataclass, asdict

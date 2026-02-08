@@ -1,3 +1,15 @@
+import builtins
+
+def _running_in_streamlit() -> bool:
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+# ✅ Kill all print() output in Streamlit (stops log spam even if legacy demo blocks exist)
+if _running_in_streamlit():
+    builtins.print = lambda *args, **kwargs: None  # type: ignore[assignment]
 # app.py
 # Streamlit RLV + Inclusionary Housing (IH) Calculator (Overlay-aware) — patched + hardened
 # - No top-level print() spam (Streamlit reruns safe)

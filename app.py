@@ -1,7 +1,6 @@
 # app.py
 # IH + RLV Calculator (Cape Town-style feasibility) — FULL PATCHED SINGLE FILE
 # ✅ Fixes log spam: disables ALL print() output under Streamlit
-# ✅ Removes/neutralizes legacy demo prints (even if you accidentally left them somewhere)
 # ✅ Implements the 6 “real-world” tweaks:
 #   1) Contingency + escalation on construction
 #   2) Split marketing vs finance (finance proxy on cost outflows)
@@ -11,7 +10,6 @@
 #   6) Land acquisition friction costs (optional, adds outputs; preserves existing keys)
 # ✅ Preserves existing audit structure/keys and keeps legacy "finance_marketing" key
 # ✅ Backwards-compatible: if split rates are 0 but legacy finance_marketing_rate > 0, uses legacy gdv*rate
-
 
 import builtins
 from dataclasses import dataclass, asdict
@@ -26,7 +24,6 @@ import streamlit as st
 def _running_in_streamlit() -> bool:
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
-
         return get_script_run_ctx() is not None
     except Exception:
         return False
@@ -228,13 +225,16 @@ class RLVMachine:
         )
         adjusted_build_cost_sqm = build_cost_sqm * build_cost_multiplier
 
-        # Allocate GFA by sellable split (proxy)
-        affordable_gfa = total_bulk * (affordable_area / sellable_area) if sellable_area > 0 else 0.0
+        affordable_gfa = (
+            total_bulk * (affordable_area / sellable_area) if sellable_area > 0 else 0.0
+        )
         market_gfa = total_bulk - affordable_gfa
 
         base_construction_market = market_gfa * adjusted_build_cost_sqm
         base_construction_affordable = (
-            affordable_gfa * adjusted_build_cost_sqm * self.overlays.affordable_cost_multiplier
+            affordable_gfa
+            * adjusted_build_cost_sqm
+            * self.overlays.affordable_cost_multiplier
         )
         base_construction = base_construction_market + base_construction_affordable
 
@@ -246,8 +246,16 @@ class RLVMachine:
         prof_fees = total_construction * self.overlays.prof_fees_rate
 
         # 6) DCs (optionally rounded)
-        estimated_units_raw = sellable_area / self.overlays.avg_unit_size_sqm if self.overlays.avg_unit_size_sqm > 0 else 0.0
-        estimated_units = float(round(estimated_units_raw)) if self.overlays.round_units else float(estimated_units_raw)
+        estimated_units_raw = (
+            sellable_area / self.overlays.avg_unit_size_sqm
+            if self.overlays.avg_unit_size_sqm > 0
+            else 0.0
+        )
+        estimated_units = (
+            float(round(estimated_units_raw))
+            if self.overlays.round_units
+            else float(estimated_units_raw)
+        )
         muni_dcs = estimated_units * self.overlays.dc_per_unit
 
         # 7) Finance + Marketing (backwards compatible)
@@ -256,23 +264,26 @@ class RLVMachine:
         legacy_blended = float(getattr(self.overlays, "finance_marketing_rate", 0.0))
 
         if marketing_rate == 0.0 and finance_rate_on_costs == 0.0 and legacy_blended > 0:
-            # Legacy behavior: single % of total GDV
             finance_marketing = gdv * legacy_blended
             marketing = finance_marketing
             finance = 0.0
             finance_base = 0.0
             finance_mode = "legacy_gdv_blended"
         else:
-            marketing = gdv_market * marketing_rate  # typical: market sales only
+            marketing = gdv_market * marketing_rate
             finance_base = total_construction + prof_fees + muni_dcs
             finance = finance_base * finance_rate_on_costs
             finance_marketing = marketing + finance
             finance_mode = "split_marketing_plus_finance_on_costs"
 
         # 8) Incentives
-        incentives_total = float(self.overlays.municipal_incentive_amount + self.overlays.rates_rebate_amount)
+        incentives_total = float(
+            self.overlays.municipal_incentive_amount + self.overlays.rates_rebate_amount
+        )
 
-        total_costs_ex_profit = total_construction + prof_fees + muni_dcs + finance_marketing - incentives_total
+        total_costs_ex_profit = (
+            total_construction + prof_fees + muni_dcs + finance_marketing - incentives_total
+        )
 
         # 9) Profit basis
         if self.overlays.profit_basis == "cost":
@@ -284,10 +295,12 @@ class RLVMachine:
         residual_land_value = gdv - (total_costs_ex_profit + target_profit)
 
         # 11) Acquisition friction (optional)
-        acquisition_costs = max(0.0, residual_land_value) * self.overlays.acquisition_cost_rate + self.overlays.acquisition_cost_lump_sum
+        acquisition_costs = (
+            max(0.0, residual_land_value) * self.overlays.acquisition_cost_rate
+            + self.overlays.acquisition_cost_lump_sum
+        )
         residual_land_value_after_acq = residual_land_value - acquisition_costs
 
-        # --------- AUDIT (structure preserved; we only add extra fields) ----------
         audit = {
             "inputs": {
                 "plot_size_sqm": self.plot_size,
@@ -330,9 +343,7 @@ class RLVMachine:
                 "estimated_units": self._round2(estimated_units),
                 "estimated_units_raw": self._round2(estimated_units_raw),
                 "municipal_dcs": self._round2(muni_dcs),
-                # legacy key preserved:
-                "finance_marketing": self._round2(finance_marketing),
-                # added helpful splits:
+                "finance_marketing": self._round2(finance_marketing),  # legacy key preserved
                 "marketing_cost": self._round2(marketing),
                 "finance_cost": self._round2(finance),
                 "finance_base": self._round2(finance_base),
@@ -347,12 +358,13 @@ class RLVMachine:
                 "residual_land_value": self._round2(residual_land_value),
                 "max_offer_for_land": self._round2(residual_land_value),
                 "is_viable": residual_land_value > 0,
-                "residual_land_value_after_acquisition_costs": self._round2(residual_land_value_after_acq),
+                "residual_land_value_after_acquisition_costs": self._round2(
+                    residual_land_value_after_acq
+                ),
                 "is_viable_after_acquisition_costs": residual_land_value_after_acq > 0,
             },
         }
 
-        # Compact summary + audit
         return {
             "gross_development_value": self._round2(gdv),
             "total_construction_cost": self._round2(total_construction),
@@ -367,9 +379,8 @@ class RLVMachine:
 # -----------------------------
 st.set_page_config(page_title="IH + RLV Calculator", page_icon="🏗️", layout="wide")
 st.title("🏗️ Inclusionary Housing + Residual Land Value Calculator")
-st.sidebar.caption("✅ Patched build: 2026-02-08")
+st.sidebar.caption("✅ Patched build: 2026-02-08 (no __future__ import)")
 
-# ---- Sidebar inputs ----
 st.sidebar.header("Inputs")
 
 with st.sidebar.expander("Site & Zoning", expanded=True):
@@ -435,7 +446,7 @@ with st.sidebar.expander("Incentives & Acquisition (optional)", expanded=False):
 
 show_debug = st.sidebar.checkbox("Show debug", value=False)
 
-# ---- Run model ----
+# Run model
 zoning_rules = {"floor_factor": floor_factor, "coverage": coverage}
 
 overlays = Overlays(
@@ -487,7 +498,7 @@ except Exception as e:
 
 audit = result["audit"]
 
-# ---- Main Dashboard ----
+# Dashboard
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Gross Development Value (GDV)", _money(result["gross_development_value"]))
 c2.metric("Construction Cost", _money(result["total_construction_cost"]))
@@ -496,7 +507,6 @@ c4.metric("Inclusionary", result["inclusionary_hit"])
 
 st.divider()
 
-# ---- Feasibility Lens ----
 st.subheader("🔎 The Feasibility Lens")
 
 total_bulk = float(audit["bulk_calcs"]["total_bulk_gfa"])
@@ -531,6 +541,7 @@ k5.metric("Incentives", _money(audit["costs"]["incentives_total"]))
 with st.expander("Full audit trail (JSON)"):
     st.json(audit)
 
-# ---- Local-only demo (never runs on Streamlit Cloud; also print is silenced in Streamlit anyway) ----
+
+# Local-only demo (never runs on Streamlit Cloud; also print is silenced in Streamlit anyway)
 if __name__ == "__main__" and not _running_in_streamlit():
     pass

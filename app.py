@@ -346,7 +346,12 @@ def render_audit(audit: Dict[str, Any]) -> None:
     import pandas as pd
 
     df = pd.DataFrame(rows, columns=["Key", "Value"])
-    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # ✅ Make Arrow serialization stable (mixed types -> string for display)
+    df["Value"] = df["Value"].astype(str)
+
+    # ✅ Streamlit 1.54+: use width instead of use_container_width
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 # -----------------------------

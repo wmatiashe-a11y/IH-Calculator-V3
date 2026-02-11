@@ -18,21 +18,17 @@ ROADS_TRANSPORT_PORTION = 285.35
 IH_PRICE_PER_M2 = 15000            # capped IH price (assumption)
 DEFAULT_PROF_FEE_RATE = 0.12       # % of (construction + DCs)
 
-# --- EXIT PRICE DATABASE (DEFAULT / PLACEHOLDER) ---
-# Replace these with your real suburb-specific exit prices when ready.
+# --- EXIT PRICE DATABASE (2026 Estimates, sectional title new apartments) ---
+# Prices are per m². Using suburb GROUPS (slashes) as provided.
+# Note: Clifton/Bantry Bay upper value assumed = 170,000 (image was truncated).
 DEFAULT_EXIT_PRICES = [
-    {"suburb": "Sea Point", "exit_price_per_m2": 65000},
-    {"suburb": "Green Point", "exit_price_per_m2": 60000},
-    {"suburb": "CBD", "exit_price_per_m2": 52000},
-    {"suburb": "Woodstock", "exit_price_per_m2": 42000},
-    {"suburb": "Salt River", "exit_price_per_m2": 38000},
-    {"suburb": "Observatory", "exit_price_per_m2": 36000},
-    {"suburb": "Rondebosch", "exit_price_per_m2": 45000},
-    {"suburb": "Claremont", "exit_price_per_m2": 48000},
-    {"suburb": "Kenilworth", "exit_price_per_m2": 43000},
-    {"suburb": "Newlands", "exit_price_per_m2": 52000},
-    {"suburb": "Century City", "exit_price_per_m2": 40000},
-    {"suburb": "Bellville", "exit_price_per_m2": 28000},
+    {"suburb": "Clifton / Bantry Bay", "min_price_per_m2": 120000, "max_price_per_m2": 170000},
+    {"suburb": "Sea Point / Green Point", "min_price_per_m2": 65000, "max_price_per_m2": 85000},
+    {"suburb": "City Bowl (CBD / Gardens)", "min_price_per_m2": 45000, "max_price_per_m2": 60000},
+    {"suburb": "Claremont / Rondebosch", "min_price_per_m2": 40000, "max_price_per_m2": 52000},
+    {"suburb": "Woodstock / Salt River", "min_price_per_m2": 32000, "max_price_per_m2": 42000},
+    {"suburb": "Durbanville / Sunningdale", "min_price_per_m2": 25000, "max_price_per_m2": 35000},
+    {"suburb": "Khayelitsha / Mitchells Plain", "min_price_per_m2": 10000, "max_price_per_m2": 15000},
 ]
 
 st.set_page_config(page_title="CPT RLV Calculator", layout="wide")
@@ -89,7 +85,7 @@ def pt_discount(pt_zone_value: str) -> float:
 def load_exit_price_db() -> pd.DataFrame:
     """
     Session-backed exit price database:
-    - starts with DEFAULT_EXIT_PRICES
+    - starts with DEFAULT_EXIT_PRICES (range-based)
     - can be replaced by a user-uploaded CSV
     """
     if "exit_price_db" not in st.session_state:
@@ -99,27 +95,46 @@ def load_exit_price_db() -> pd.DataFrame:
 
 def set_exit_price_db_from_upload(uploaded_file) -> tuple[bool, str]:
     """
-    Expected CSV columns:
-      suburb, exit_price_per_m2
+    Accepts either:
+      A) suburb, min_price_per_m2, max_price_per_m2
+      B) suburb, exit_price_per_m2  (treated as min=max)
     """
     try:
         df = pd.read_csv(uploaded_file)
         cols = {c.lower().strip(): c for c in df.columns}
-        if "suburb" not in cols or "exit_price_per_m2" not in cols:
-            return False, "CSV must include columns: suburb, exit_price_per_m2"
 
-        df2 = df[[cols["suburb"], cols["exit_price_per_m2"]]].copy()
-        df2.columns = ["suburb", "exit_price_per_m2"]
+        if "suburb" not in cols:
+            return False, "CSV must include a 'suburb' column."
+
+        has_range = ("min_price_per_m2" in cols) and ("max_price_per_m2" in cols)
+        has_single = "exit_price_per_m2" in cols
+
+        if not has_range and not has_single:
+            return False, "CSV must include either (min_price_per_m2 & max_price_per_m2) or exit_price_per_m2."
+
+        if has_range:
+            df2 = df[[cols["suburb"], cols["min_price_per_m2"], cols["max_price_per_m2"]]].copy()
+            df2.columns = ["suburb", "min_price_per_m2", "max_price_per_m2"]
+            df2["min_price_per_m2"] = pd.to_numeric(df2["min_price_per_m2"], errors="coerce")
+            df2["max_price_per_m2"] = pd.to_numeric(df2["max_price_per_m2"], errors="coerce")
+            df2 = df2.dropna(subset=["suburb", "min_price_per_m2", "max_price_per_m2"])
+        else:
+            df2 = df[[cols["suburb"], cols["exit_price_per_m2"]]].copy()
+            df2.columns = ["suburb", "exit_price_per_m2"]
+            df2["exit_price_per_m2"] = pd.to_numeric(df2["exit_price_per_m2"], errors="coerce")
+            df2 = df2.dropna(subset=["suburb", "exit_price_per_m2"])
+            df2["min_price_per_m2"] = df2["exit_price_per_m2"]
+            df2["max_price_per_m2"] = df2["exit_price_per_m2"]
+            df2 = df2.drop(columns=["exit_price_per_m2"])
+
         df2["suburb"] = df2["suburb"].astype(str).str.strip()
-        df2["exit_price_per_m2"] = pd.to_numeric(df2["exit_price_per_m2"], errors="coerce")
-        df2 = df2.dropna(subset=["suburb", "exit_price_per_m2"])
         df2 = df2.sort_values("suburb").drop_duplicates(subset=["suburb"], keep="last")
 
         if df2.empty:
             return False, "CSV loaded but no valid rows found."
 
         st.session_state.exit_price_db = df2
-        return True, f"Loaded {len(df2)} suburb exit prices."
+        return True, f"Loaded {len(df2)} suburb exit price ranges."
     except Exception as e:
         return False, f"Failed to load CSV: {e}"
 
@@ -249,7 +264,7 @@ density_bonus = st.sidebar.slider("Density Bonus (%)", 0, 50, 20)
 # -------------------------
 # Exit price (suburb DB)
 # -------------------------
-st.sidebar.header("3. Exit Prices")
+st.sidebar.header("3. Exit Prices (Sectional Title 2026 est.)")
 exit_price_source = st.sidebar.radio(
     "Market exit price source",
     options=["Suburb database", "Manual entry"],
@@ -258,29 +273,46 @@ exit_price_source = st.sidebar.radio(
 
 db = load_exit_price_db()
 
-# Optional CSV upload to replace the database
 with st.sidebar.expander("Upload exit price CSV (optional)"):
-    uploaded = st.file_uploader("CSV with columns: suburb, exit_price_per_m2", type=["csv"])
+    uploaded = st.file_uploader("CSV with suburb + price columns", type=["csv"])
     if uploaded is not None:
         ok, msg = set_exit_price_db_from_upload(uploaded)
         if ok:
             st.success(msg)
         else:
             st.error(msg)
-    st.caption("Tip: this is how you plug in your 2026 dataset without editing code.")
+    st.caption("Supports either (min_price_per_m2,max_price_per_m2) or exit_price_per_m2.")
 
-# If using database: select suburb and auto-fill market price
 selected_suburb = None
+db_min = None
+db_max = None
 db_price = None
 
 if exit_price_source == "Suburb database":
     suburbs = sorted(db["suburb"].dropna().astype(str).unique().tolist())
-    selected_suburb = st.sidebar.selectbox("Select suburb", suburbs, index=0 if suburbs else None)
+    selected_suburb = st.sidebar.selectbox("Select suburb group", suburbs, index=0 if suburbs else None)
+
+    price_point = st.sidebar.radio(
+        "Apply which point in range?",
+        ["Low", "Mid", "High"],
+        index=1,
+        horizontal=True,
+    )
+
     if selected_suburb:
-        row = db.loc[db["suburb"] == selected_suburb, "exit_price_per_m2"]
-        db_price = float(row.iloc[0]) if len(row) else None
+        row = db.loc[db["suburb"] == selected_suburb]
+        if not row.empty:
+            db_min = float(row["min_price_per_m2"].iloc[0])
+            db_max = float(row["max_price_per_m2"].iloc[0])
+            if price_point == "Low":
+                db_price = db_min
+            elif price_point == "High":
+                db_price = db_max
+            else:
+                db_price = (db_min + db_max) / 2.0
 
     override_price = st.sidebar.checkbox("Override suburb exit price", value=False)
+
     if (db_price is None) or override_price:
         market_price = st.sidebar.number_input(
             "Market Sales Price (per m2)",
@@ -290,13 +322,15 @@ if exit_price_source == "Suburb database":
         )
     else:
         market_price = db_price
-        st.sidebar.caption(f"Auto: **R {market_price:,.0f}/m²** (from {selected_suburb})")
-
+        st.sidebar.caption(
+            f"Auto: **R {market_price:,.0f}/m²** ({price_point}) "
+            f"from range **R {db_min:,.0f} – R {db_max:,.0f}/m²**"
+        )
 else:
     market_price = st.sidebar.number_input("Market Sales Price (per m2)", value=35000.0, min_value=0.0, step=500.0)
 
 # -------------------------
-# Financial inputs
+# Costs & Returns
 # -------------------------
 st.sidebar.header("4. Costs & Returns")
 cost_mode = st.sidebar.radio(
@@ -403,9 +437,14 @@ With **{ih_percent}% IH** and **{pt_zone}**, you save:
     if res["brownfield_credit"]:
         st.warning("⚠️ Existing GBA exceeds proposed GBA. Net increase is zero; no DCs payable (Brownfield Credit).")
 
-    # Show suburb + market price source
     if exit_price_source == "Suburb database" and selected_suburb:
-        st.caption(f"Exit price suburb: **{selected_suburb}** • Market price used: **R {market_price:,.0f}/m²**")
+        if db_min is not None and db_max is not None:
+            st.caption(
+                f"Exit price suburb group: **{selected_suburb}** • Market price used: **R {market_price:,.0f}/m²** "
+                f"({price_point} of R {db_min:,.0f}–R {db_max:,.0f}/m²)"
+            )
+        else:
+            st.caption(f"Exit price suburb group: **{selected_suburb}** • Market price used: **R {market_price:,.0f}/m²**")
     else:
         st.caption(f"Market price used: **R {market_price:,.0f}/m²**")
 
@@ -489,6 +528,5 @@ df_matrix = pd.DataFrame(
 )
 st.table(df_matrix)
 
-# Optional: show the current DB (so you can sanity check what’s loaded)
-with st.expander("View exit price database"):
+with st.expander("View exit price database (2026 estimates)"):
     st.dataframe(load_exit_price_db(), use_container_width=True)

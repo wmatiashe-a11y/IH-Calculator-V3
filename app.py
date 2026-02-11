@@ -82,14 +82,75 @@ def pt_discount(pt_zone_value: str) -> float:
     return 1.0
 
 
+def normalize_exit_price_db(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensures the exit price DB always has:
+      suburb, min_price_per_m2, max_price_per_m2
+
+    Migrates older schema:
+      suburb, exit_price_per_m2  -> min=max=exit_price_per_m2
+
+    Also handles case/spacing differences.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(DEFAULT_EXIT_PRICES)
+
+    df = df.copy()
+
+    # Map lower-case column names to real names
+    col_map = {c.lower().strip(): c for c in df.columns}
+
+    # Must have suburb
+    if "suburb" not in col_map:
+        # If missing suburb, reset to defaults (safe fallback)
+        return pd.DataFrame(DEFAULT_EXIT_PRICES)
+
+    suburb_col = col_map["suburb"]
+
+    # Identify possible price columns
+    min_col = col_map.get("min_price_per_m2")
+    max_col = col_map.get("max_price_per_m2")
+    single_col = col_map.get("exit_price_per_m2")
+
+    if min_col is None or max_col is None:
+        # Try migrate from single price col
+        if single_col is not None:
+            df["min_price_per_m2"] = df[single_col]
+            df["max_price_per_m2"] = df[single_col]
+        else:
+            # No usable columns: reset to defaults
+            return pd.DataFrame(DEFAULT_EXIT_PRICES)
+    else:
+        # Ensure standardized names
+        df["min_price_per_m2"] = df[min_col]
+        df["max_price_per_m2"] = df[max_col]
+
+    df["suburb"] = df[suburb_col].astype(str).str.strip()
+    df["min_price_per_m2"] = pd.to_numeric(df["min_price_per_m2"], errors="coerce")
+    df["max_price_per_m2"] = pd.to_numeric(df["max_price_per_m2"], errors="coerce")
+
+    df = df.dropna(subset=["suburb", "min_price_per_m2", "max_price_per_m2"])
+    df = df.sort_values("suburb").drop_duplicates(subset=["suburb"], keep="last")
+
+    # Safety: swap if min > max
+    swap_mask = df["min_price_per_m2"] > df["max_price_per_m2"]
+    if swap_mask.any():
+        df.loc[swap_mask, ["min_price_per_m2", "max_price_per_m2"]] = df.loc[
+            swap_mask, ["max_price_per_m2", "min_price_per_m2"]
+        ].values
+
+    return df[["suburb", "min_price_per_m2", "max_price_per_m2"]].reset_index(drop=True)
+
+
 def load_exit_price_db() -> pd.DataFrame:
     """
     Session-backed exit price database:
     - starts with DEFAULT_EXIT_PRICES (range-based)
-    - can be replaced by a user-uploaded CSV
+    - migrates older stored schema automatically
     """
     if "exit_price_db" not in st.session_state:
         st.session_state.exit_price_db = pd.DataFrame(DEFAULT_EXIT_PRICES)
+    st.session_state.exit_price_db = normalize_exit_price_db(st.session_state.exit_price_db)
     return st.session_state.exit_price_db
 
 
@@ -101,38 +162,9 @@ def set_exit_price_db_from_upload(uploaded_file) -> tuple[bool, str]:
     """
     try:
         df = pd.read_csv(uploaded_file)
-        cols = {c.lower().strip(): c for c in df.columns}
-
-        if "suburb" not in cols:
-            return False, "CSV must include a 'suburb' column."
-
-        has_range = ("min_price_per_m2" in cols) and ("max_price_per_m2" in cols)
-        has_single = "exit_price_per_m2" in cols
-
-        if not has_range and not has_single:
-            return False, "CSV must include either (min_price_per_m2 & max_price_per_m2) or exit_price_per_m2."
-
-        if has_range:
-            df2 = df[[cols["suburb"], cols["min_price_per_m2"], cols["max_price_per_m2"]]].copy()
-            df2.columns = ["suburb", "min_price_per_m2", "max_price_per_m2"]
-            df2["min_price_per_m2"] = pd.to_numeric(df2["min_price_per_m2"], errors="coerce")
-            df2["max_price_per_m2"] = pd.to_numeric(df2["max_price_per_m2"], errors="coerce")
-            df2 = df2.dropna(subset=["suburb", "min_price_per_m2", "max_price_per_m2"])
-        else:
-            df2 = df[[cols["suburb"], cols["exit_price_per_m2"]]].copy()
-            df2.columns = ["suburb", "exit_price_per_m2"]
-            df2["exit_price_per_m2"] = pd.to_numeric(df2["exit_price_per_m2"], errors="coerce")
-            df2 = df2.dropna(subset=["suburb", "exit_price_per_m2"])
-            df2["min_price_per_m2"] = df2["exit_price_per_m2"]
-            df2["max_price_per_m2"] = df2["exit_price_per_m2"]
-            df2 = df2.drop(columns=["exit_price_per_m2"])
-
-        df2["suburb"] = df2["suburb"].astype(str).str.strip()
-        df2 = df2.sort_values("suburb").drop_duplicates(subset=["suburb"], keep="last")
-
+        df2 = normalize_exit_price_db(df)
         if df2.empty:
             return False, "CSV loaded but no valid rows found."
-
         st.session_state.exit_price_db = df2
         return True, f"Loaded {len(df2)} suburb exit price ranges."
     except Exception as e:
@@ -212,7 +244,6 @@ def compute_model(
             target_all_in = gdv * adj_cost_pct_gdv
             construction_costs = (target_all_in - (adj_fees_rate * total_dc)) / (1.0 + adj_fees_rate)
             construction_costs = max(0.0, construction_costs)
-
             hard_plus_dc = construction_costs + total_dc
             prof_fees = hard_plus_dc * adj_fees_rate
 
@@ -279,9 +310,14 @@ with st.sidebar.expander("Upload exit price CSV (optional)"):
         ok, msg = set_exit_price_db_from_upload(uploaded)
         if ok:
             st.success(msg)
+            db = load_exit_price_db()  # refresh after upload
         else:
             st.error(msg)
-    st.caption("Supports either (min_price_per_m2,max_price_per_m2) or exit_price_per_m2.")
+
+    if st.button("Reset to 2026 defaults"):
+        st.session_state.exit_price_db = pd.DataFrame(DEFAULT_EXIT_PRICES)
+        db = load_exit_price_db()
+        st.success("Exit price database reset.")
 
 selected_suburb = None
 db_min = None
@@ -437,18 +473,14 @@ With **{ih_percent}% IH** and **{pt_zone}**, you save:
     if res["brownfield_credit"]:
         st.warning("⚠️ Existing GBA exceeds proposed GBA. Net increase is zero; no DCs payable (Brownfield Credit).")
 
-    if exit_price_source == "Suburb database" and selected_suburb:
-        if db_min is not None and db_max is not None:
-            st.caption(
-                f"Exit price suburb group: **{selected_suburb}** • Market price used: **R {market_price:,.0f}/m²** "
-                f"({price_point} of R {db_min:,.0f}–R {db_max:,.0f}/m²)"
-            )
-        else:
-            st.caption(f"Exit price suburb group: **{selected_suburb}** • Market price used: **R {market_price:,.0f}/m²**")
+    if exit_price_source == "Suburb database" and selected_suburb and db_min is not None and db_max is not None:
+        st.caption(
+            f"Exit price suburb group: **{selected_suburb}** • Market price used: **R {market_price:,.0f}/m²** "
+            f"({price_point} of R {db_min:,.0f}–R {db_max:,.0f}/m²)"
+        )
     else:
         st.caption(f"Market price used: **R {market_price:,.0f}/m²**")
 
-    # Construction cost readout (mode-aware)
     if res["cost_mode"] == "R / m²":
         st.caption(f"Construction input: **R {res['adj_cost_sqm']:,.0f}/m²**")
     else:
@@ -491,7 +523,6 @@ with col2:
     fig.update_layout(margin=dict(l=20, r=20, t=40, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
-# Sensitivity Matrix (uses same engine + overlay + cost mode + scope)
 st.subheader("Sensitivity Analysis: IH % vs Density Bonus (overlay-consistent)")
 
 ih_levels = [0, 10, 20, 30]

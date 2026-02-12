@@ -1,4 +1,9 @@
 import streamlit as st
+import streamlit.components.v1 as components
+
+# Replace with your actual City Map Viewer URL (or keep in secrets.toml and read it)
+CITYMAP_VIEWER_URL = "your_citymap_viewer_url_here"
+
 import pandas as pd
 import plotly.graph_objects as go
 from dataclasses import dataclass
@@ -52,6 +57,16 @@ PROF_FEE_TARGET_TOTAL = 0.135
 
 st.set_page_config(page_title="CPT RLV Calculator", layout="wide")
 st.title("🏗️ Cape Town Redevelopment: RLV & IH Sensitivity")
+
+# =========================
+# CITYMAP VIEWER (EMBED)
+# =========================
+with st.expander("🗺️ City of Cape Town Map Viewer", expanded=False):
+    st.caption("Use this to find the erf / site context. (Embedding depends on CORS/X-Frame policies.)")
+    if CITYMAP_VIEWER_URL and CITYMAP_VIEWER_URL != "your_citymap_viewer_url_here":
+        components.iframe(CITYMAP_VIEWER_URL, height=520, scrolling=True)
+    else:
+        st.info("Set CITYMAP_VIEWER_URL to your City Map Viewer link to enable the embedded viewer.")
 
 # =========================
 # OVERLAYS
@@ -156,7 +171,6 @@ def set_exit_price_db_from_upload(uploaded_file) -> tuple[bool, str]:
 def default_prof_fee_components_scaled_to_target() -> dict[str, float]:
     """
     Uses midpoints of each range, then scales all components so the sum equals 13.5% (target).
-    Keeps each component typically within its band.
     """
     mids = {k: (v[0] + v[1]) / 2.0 for k, v in PROF_FEE_RANGES.items()}
     s = sum(mids.values())
@@ -171,29 +185,21 @@ def compute_model(
     existing_gba_bulk_m2: float,
     ff: float,
     density_bonus_pct: float,
-    efficiency_ratio: float,       # NEW: sellable/bulk
+    efficiency_ratio: float,
     ih_pct: float,
     pt_zone_value: str,
     market_price_per_sellable_m2: float,
     ih_price_per_sellable_m2: float,
     profit_pct_gdv: float,
-    base_prof_fee_rate: float,     # total prof fee rate (sum of components)
+    base_prof_fee_rate: float,
     overlay: HeritageOverlay,
-    cost_mode: str,                # "R / m²" or "% of GDV"
-    base_cost_sqm: float,          # used if "R / m²"
-    base_cost_pct_gdv: float,      # used if "% of GDV"
-    pct_gdv_scope: str,            # "Hard cost only" or "Hard + soft (includes prof fees)"
+    cost_mode: str,
+    base_cost_sqm: float,
+    base_cost_pct_gdv: float,
+    pct_gdv_scope: str,
 ):
-    """
-    2026 updates:
-    - Efficiency ratio applied to revenue (sellable) while costs/DCs remain on bulk.
-    - Profit default 20% of GDV (input).
-    - Professional fees itemised externally; model uses summed rate.
-    """
-
     base_bulk = land_area_m2 * ff
 
-    # Apply overlay (bonus override + uplifts)
     cost_input = base_cost_sqm if cost_mode == "R / m²" else base_cost_pct_gdv
     adj_bonus_pct, adj_cost_input, adj_fees_rate, adj_profit_rate = apply_heritage_overlay(
         density_bonus_pct=density_bonus_pct,
@@ -206,17 +212,14 @@ def compute_model(
     proposed_bulk = base_bulk * (1.0 + adj_bonus_pct / 100.0)
     proposed_sellable = proposed_bulk * efficiency_ratio
 
-    # Brownfield credit / net increase (bulk)
     net_increase_bulk = max(0.0, proposed_bulk - existing_gba_bulk_m2)
 
-    # IH split applied on NET INCREASE bulk for DCs and on sellable for revenue
     ih_increase_bulk = net_increase_bulk * (ih_pct / 100.0)
     market_increase_bulk = net_increase_bulk - ih_increase_bulk
 
     ih_sellable = ih_increase_bulk * efficiency_ratio
     market_sellable = max(0.0, proposed_sellable - ih_sellable)
 
-    # DCs payable on market share of net increase (bulk), PT discount on roads portion
     disc = pt_discount(pt_zone_value)
     roads_dc = market_increase_bulk * ROADS_TRANSPORT_PORTION * disc
     other_dc = market_increase_bulk * (DC_BASE_RATE - ROADS_TRANSPORT_PORTION)
@@ -225,10 +228,8 @@ def compute_model(
     total_potential_dc = net_increase_bulk * DC_BASE_RATE
     dc_savings = total_potential_dc - total_dc
 
-    # Revenue uses SELLABLE areas
     gdv = (market_sellable * market_price_per_sellable_m2) + (ih_sellable * ih_price_per_sellable_m2)
 
-    # Construction costs (hard) are on BULK (as per your original logic)
     adj_cost_sqm = None
     adj_cost_pct_gdv = None
 
@@ -245,9 +246,6 @@ def compute_model(
             hard_plus_dc = construction_costs + total_dc
             prof_fees = hard_plus_dc * adj_fees_rate
         else:
-            # If %GDV represents (construction + prof fees) all-in:
-            # Solve without double counting fees: (construction + fees) = p*GDV,
-            # where fees = fee_rate*(construction + DCs).
             target_all_in = gdv * adj_cost_pct_gdv
             construction_costs = (target_all_in - (adj_fees_rate * total_dc)) / (1.0 + adj_fees_rate)
             construction_costs = max(0.0, construction_costs)
@@ -300,24 +298,13 @@ density_bonus = st.sidebar.slider("Density Bonus (%)", 0, 50, 20)
 
 st.sidebar.header("3. 2026 Benchmarks")
 efficiency_ratio = st.sidebar.slider("Efficiency Ratio (sellable ÷ bulk)", 0.60, 0.95, 0.85, step=0.01)
-
-# Profit default 20% (bankable)
 profit_margin = st.sidebar.slider("Developer Profit (as % of GDV)", 10, 30, 20) / 100.0
 
-# Hard cost tier selector (used as default in R/m² mode and in sensitivity)
 build_tier = st.sidebar.selectbox("Hard Cost Tier (2026)", list(COST_TIERS.keys()), index=1)
 tier_cost_default = COST_TIERS[build_tier]
 
-# -------------------------
-# Exit price (suburb DB)
-# -------------------------
 st.sidebar.header("4. Exit Prices (Sectional Title 2026 est.)")
-exit_price_source = st.sidebar.radio(
-    "Market exit price source",
-    options=["Suburb database", "Manual entry"],
-    index=0,
-)
-
+exit_price_source = st.sidebar.radio("Market exit price source", ["Suburb database", "Manual entry"], index=0)
 db = load_exit_price_db()
 
 with st.sidebar.expander("Upload exit price CSV (optional)"):
@@ -372,16 +359,10 @@ if exit_price_source == "Suburb database":
             f"from **R {db_min:,.0f} – R {db_max:,.0f}/m²**"
         )
 else:
-    market_price = st.sidebar.number_input(
-        "Market Sales Price (R per sellable m²)", value=35000.0, min_value=0.0, step=500.0
-    )
+    market_price = st.sidebar.number_input("Market Sales Price (R per sellable m²)", value=35000.0, min_value=0.0, step=500.0)
 
-# -------------------------
-# Professional fees (itemised 2026)
-# -------------------------
 st.sidebar.header("5. Professional Fees (2026 ranges)")
 default_components = default_prof_fee_components_scaled_to_target()
-
 with st.sidebar.expander("Set professional fee components (uses sum of items)"):
     fee_components = {}
     for name, (lo, hi) in PROF_FEE_RANGES.items():
@@ -395,21 +376,14 @@ with st.sidebar.expander("Set professional fee components (uses sum of items)"):
         ) / 100.0
 
 base_prof_fee_rate = sum(fee_components.values())
-st.sidebar.caption(f"Total Professional Fees (sum): **{base_prof_fee_rate*100:.2f}%** (image: ~12–15%)")
+st.sidebar.caption(f"Total Professional Fees (sum): **{base_prof_fee_rate*100:.2f}%** (~12–15%)")
 
-# -------------------------
-# Costs & Returns
-# -------------------------
 st.sidebar.header("6. Construction Cost Input")
-cost_mode = st.sidebar.radio("Construction cost input mode", options=["R / m²", "% of GDV"], index=0)
+cost_mode = st.sidebar.radio("Construction cost input mode", ["R / m²", "% of GDV"], index=0)
 
 pct_gdv_scope = "Hard cost only"
 if cost_mode == "% of GDV":
-    pct_gdv_scope = st.sidebar.radio(
-        "%GDV applies to…",
-        options=["Hard cost only", "Hard + soft (includes prof fees)"],
-        index=0,
-    )
+    pct_gdv_scope = st.sidebar.radio("%GDV applies to…", ["Hard cost only", "Hard + soft (includes prof fees)"], index=0)
 
 if cost_mode == "R / m²":
     const_cost_sqm = st.sidebar.number_input(
@@ -417,40 +391,19 @@ if cost_mode == "R / m²":
         value=float(tier_cost_default),
         min_value=0.0,
         step=250.0,
-        help="2026 benchmarks: Economic 10k, Mid 18k, Luxury 25k+ (bulk-based).",
     )
     const_cost_pct_gdv = 0.0
 else:
-    const_cost_pct_gdv = st.sidebar.slider(
-        "Construction Cost (% of GDV)",
-        min_value=10,
-        max_value=90,
-        value=50,
-    ) / 100.0
+    const_cost_pct_gdv = st.sidebar.slider("Construction Cost (% of GDV)", 10, 90, 50) / 100.0
     const_cost_sqm = 0.0
 
-# -------------------------
-# Heritage overlay
-# -------------------------
 st.sidebar.header("7. Overlays")
 st.sidebar.subheader("🏛️ Built Heritage Overlay")
-
 heritage_enabled = st.sidebar.checkbox("Enable Built Heritage Overlay", value=False)
-heritage_bonus_suppression = st.sidebar.slider(
-    "Bonus suppression (%)",
-    0, 100, 50,
-    disabled=not heritage_enabled,
-    help="0% = full bonus achievable; 100% = bonus fully blocked."
-)
-heritage_cost_uplift = st.sidebar.slider(
-    "Construction cost uplift (%)", 0, 40, 8, disabled=not heritage_enabled
-)
-heritage_fees_uplift = st.sidebar.slider(
-    "Professional fees uplift (%)", 0, 40, 5, disabled=not heritage_enabled
-)
-heritage_profit_uplift = st.sidebar.slider(
-    "Profit requirement uplift (%)", 0, 40, 5, disabled=not heritage_enabled
-)
+heritage_bonus_suppression = st.sidebar.slider("Bonus suppression (%)", 0, 100, 50, disabled=not heritage_enabled)
+heritage_cost_uplift = st.sidebar.slider("Construction cost uplift (%)", 0, 40, 8, disabled=not heritage_enabled)
+heritage_fees_uplift = st.sidebar.slider("Professional fees uplift (%)", 0, 40, 5, disabled=not heritage_enabled)
+heritage_profit_uplift = st.sidebar.slider("Profit requirement uplift (%)", 0, 40, 5, disabled=not heritage_enabled)
 
 heritage_overlay = HeritageOverlay(
     enabled=heritage_enabled,
@@ -511,18 +464,15 @@ With **{ih_percent}% IH** and **{pt_zone}**, you save:
         st.caption(f"Exit price used: **R {market_price:,.0f}/sellable m²**")
 
     st.caption(
-        f"Efficiency ratio: **{res['efficiency_ratio']*100:.0f}%** • "
+        f"Efficiency: **{res['efficiency_ratio']*100:.0f}%** • "
         f"Proposed bulk: **{res['proposed_bulk']:,.0f} m²** • "
         f"Sellable: **{res['proposed_sellable']:,.0f} m²**"
     )
     st.caption(
-        f"IH (sellable): **{res['ih_sellable']:,.0f} m²** • "
-        f"Market (sellable): **{res['market_sellable']:,.0f} m²**"
+        f"IH sellable: **{res['ih_sellable']:,.0f} m²** • Market sellable: **{res['market_sellable']:,.0f} m²**"
     )
+    st.caption(f"Professional fees total: **{res['adj_fees_rate']*100:.2f}%** • Profit: **{res['adj_profit_rate']*100:.1f}% of GDV**")
 
-    st.caption(f"Professional fees (total): **{res['adj_fees_rate']*100:.2f}%** • Profit: **{res['adj_profit_rate']*100:.1f}% of GDV**")
-
-    # Construction readout
     if res["cost_mode"] == "R / m²":
         st.caption(f"Hard cost input: **R {res['adj_cost_sqm']:,.0f}/bulk m²**")
     else:
@@ -560,9 +510,6 @@ with col2:
     fig.update_layout(margin=dict(l=20, r=20, t=40, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
-# =========================
-# SENSITIVITY (2026-aware)
-# =========================
 st.subheader("Sensitivity Analysis: IH % vs Density Bonus (2026-aware)")
 
 ih_levels = [0, 10, 20, 30]
@@ -577,16 +524,16 @@ for ih in ih_levels:
             existing_gba_bulk_m2=existing_gba,
             ff=ff,
             density_bonus_pct=bonus,
-            efficiency_ratio=efficiency_ratio,           # 2026 default used
+            efficiency_ratio=efficiency_ratio,
             ih_pct=ih,
             pt_zone_value=pt_zone,
             market_price_per_sellable_m2=market_price,
             ih_price_per_sellable_m2=IH_PRICE_PER_M2,
-            profit_pct_gdv=profit_margin,                # default 20% unless user changes
-            base_prof_fee_rate=base_prof_fee_rate,       # 2026 itemised total
-            overlay=heritage_overlay,                    # overlay applies consistently
+            profit_pct_gdv=profit_margin,
+            base_prof_fee_rate=base_prof_fee_rate,
+            overlay=heritage_overlay,
             cost_mode=cost_mode,
-            base_cost_sqm=const_cost_sqm,                # includes tier defaults if R/m² mode
+            base_cost_sqm=const_cost_sqm,
             base_cost_pct_gdv=const_cost_pct_gdv,
             pct_gdv_scope=pct_gdv_scope,
         )

@@ -2,7 +2,8 @@
 # ✅ Professional front-end layout (brand header, KPI cards, clean sidebar sections)
 # ✅ Uses your existing asset filenames (wordmark + glyph)
 # ✅ City Map Viewer embed + open-in-new-tab fallback
-# ✅ Keeps your existing calculation logic and sensitivity matrix intact
+# ✅ Clickable Plotly heatmap with metric dropdown (RLV/GDV/Profit/Costs)
+# ✅ Costs metric = Hard+Soft only, consistent with your “%GDV applies to…” toggle
 
 import os
 from dataclasses import dataclass
@@ -289,10 +290,7 @@ def default_prof_fee_components_scaled_to_target() -> dict[str, float]:
     if s <= 0:
         return {k: 0.0 for k in mids}
     scale = PROF_FEE_TARGET_TOTAL / s
-    return {k: mids[k] * scale for k in mids
-
-
-    }
+    return {k: mids[k] * scale for k in mids}
 
 
 def compute_model(
@@ -444,7 +442,9 @@ if exit_price_source == "Suburb database":
         )
     else:
         market_price = db_price
-        st.sidebar.caption(f"Auto: **R {market_price:,.0f}/m²** ({price_point}) from **R {db_min:,.0f}–R {db_max:,.0f}/m²**")
+        st.sidebar.caption(
+            f"Auto: **R {market_price:,.0f}/m²** ({price_point}) from **R {db_min:,.0f}–R {db_max:,.0f}/m²**"
+        )
 else:
     market_price = st.sidebar.number_input("Market Exit Price (R / sellable m²)", value=35000.0, min_value=0.0, step=500.0)
 
@@ -476,7 +476,11 @@ st.sidebar.markdown("### 6) Construction input")
 cost_mode = st.sidebar.radio("Construction cost mode", ["R / m²", "% of GDV"], index=0)
 pct_gdv_scope = "Hard cost only"
 if cost_mode == "% of GDV":
-    pct_gdv_scope = st.sidebar.radio("%GDV applies to…", ["Hard cost only", "Hard + soft (includes prof fees)"], index=0)
+    pct_gdv_scope = st.sidebar.radio(
+        "%GDV applies to…",
+        ["Hard cost only", "Hard + soft (includes prof fees)"],
+        index=0,
+    )
 
 if cost_mode == "R / m²":
     const_cost_sqm = st.sidebar.number_input(
@@ -638,18 +642,17 @@ with st.expander("🗺️ City of Cape Town Map Viewer", expanded=False):
 
 # =========================
 # SENSITIVITY HEATMAP (clickable + metric dropdown, no pandas styler)
+# Costs metric = Hard+Soft only, consistent with pct_gdv_scope toggle
 # =========================
 st.markdown('<div class="section-title">Sensitivity analysis</div>', unsafe_allow_html=True)
 st.caption("Choose a metric, then click a cell to pin and inspect the scenario (IH % × Density Bonus).")
 
-# ---- Metric selector
 metric = st.selectbox(
     "Heatmap metric",
-    ["RLV (R m)", "GDV (R m)", "Profit (R m)", "Total Costs (R m)"],
+    ["RLV (R m)", "GDV (R m)", "Profit (R m)", "Costs (Hard+Soft) (R m)"],
     index=0,
 )
 
-# ---- Grid controls (kept lightweight)
 with st.expander("Heatmap settings", expanded=False):
     ih_step = st.select_slider("IH step (%)", options=[5, 10], value=10)
     ih_max = st.slider("IH max (%)", min_value=10, max_value=30, value=30, step=5)
@@ -659,22 +662,30 @@ with st.expander("Heatmap settings", expanded=False):
 ih_levels = list(range(0, ih_max + 1, ih_step))
 bonus_levels = list(range(0, bonus_max + 1, bonus_step))
 
-# ---- Cache results for click breakdown
 detail_cache = {}  # (ih, bonus) -> model result dict
 
-def _metric_value(res: dict) -> float:
-    """Return value in R millions for chosen heatmap metric."""
-    if metric.startswith("RLV"):
-        return res["rlv"] / 1_000_000.0
-    if metric.startswith("GDV"):
-        return res["gdv"] / 1_000_000.0
-    if metric.startswith("Profit"):
-        return res["profit"] / 1_000_000.0
-    # Total Costs (Construction + DC + Fees + Profit)
-    total_costs = res["construction_costs"] + res["total_dc"] + res["prof_fees"] + res["profit"]
-    return total_costs / 1_000_000.0
 
-# ---- Build matrix for selected metric
+def _metric_value(res_: dict) -> float:
+    """Return value in R millions for chosen heatmap metric.
+
+    Costs (Hard+Soft) is consistent with pct_gdv_scope:
+      - Always includes: construction + professional fees
+      - Includes DCs only when pct_gdv_scope == "Hard + soft (includes prof fees)"
+        (i.e., you're running an all-in envelope where DCs are part of the package)
+    """
+    if metric.startswith("RLV"):
+        return res_["rlv"] / 1_000_000.0
+    if metric.startswith("GDV"):
+        return res_["gdv"] / 1_000_000.0
+    if metric.startswith("Profit"):
+        return res_["profit"] / 1_000_000.0
+
+    hard_soft = res_["construction_costs"] + res_["prof_fees"]
+    if pct_gdv_scope == "Hard + soft (includes prof fees)":
+        hard_soft += res_["total_dc"]
+    return hard_soft / 1_000_000.0
+
+
 z = []
 for ih in ih_levels:
     row = []
@@ -707,7 +718,6 @@ y_labels = [f"{i}% IH" for i in ih_levels]
 zmin = min(min(r) for r in z) if z else 0.0
 zmax = max(max(r) for r in z) if z else 0.0
 
-# ---- Persist selection across reruns AND across metric switches
 if "sens_selected" not in st.session_state:
     st.session_state.sens_selected = {
         "ih": ih_levels[min(2, len(ih_levels) - 1)],
@@ -719,7 +729,6 @@ sel_bonus = st.session_state.sens_selected.get("bonus")
 sel_x_label = f"{sel_bonus}% Bonus"
 sel_y_label = f"{sel_ih}% IH"
 
-# ---- Heatmap figure
 fig = go.Figure(
     data=go.Heatmap(
         z=z,
@@ -743,7 +752,7 @@ fig.update_layout(
     clickmode="event+select",
 )
 
-# ---- Highlight marker overlay for the pinned selection
+# highlight marker overlay
 if sel_x_label in x_labels and sel_y_label in y_labels:
     fig.add_trace(
         go.Scatter(
@@ -758,7 +767,6 @@ if sel_x_label in x_labels and sel_y_label in y_labels:
         )
     )
 
-# ---- Render and capture click selection (Streamlit >= 1.36)
 state = st.plotly_chart(
     fig,
     use_container_width=True,
@@ -766,7 +774,7 @@ state = st.plotly_chart(
     on_select="rerun",
 )
 
-# ---- Extract selection robustly
+# Extract selection robustly
 points = []
 try:
     sel = getattr(state, "selection", None)
@@ -782,7 +790,7 @@ if not points:
     except Exception:
         points = []
 
-# ---- Update pinned selection if clicked
+# Update pinned selection
 if points:
     p = points[0]
     sx = p.get("x")  # "20% Bonus"
@@ -795,19 +803,15 @@ if points:
     except Exception:
         pass
 
-# ---- Detail panel for pinned scenario
 detail = detail_cache.get((sel_ih, sel_bonus))
 if detail:
     st.markdown("#### Selected scenario")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("IH %", f"{sel_ih}%")
     c2.metric("Density Bonus", f"{sel_bonus}%")
-
-    # Main metric card mirrors dropdown
     c3.metric(metric.split("(")[0].strip(), f"R {_metric_value(detail):.1f}M")
     c4.metric("RLV (R m)", f"R {detail['rlv']/1_000_000:.1f}M")
 
-    # Show additional summary row
     d1, d2, d3, d4 = st.columns(4)
     d1.metric("GDV (R m)", f"R {detail['gdv']/1_000_000:.1f}M")
     d2.metric("Profit (R m)", f"R {detail['profit']/1_000_000:.1f}M")
@@ -815,7 +819,9 @@ if detail:
     d4.metric("Fees (R m)", f"R {detail['prof_fees']/1_000_000:.1f}M")
 
     with st.expander("Scenario breakdown", expanded=False):
-        total_costs = detail["construction_costs"] + detail["total_dc"] + detail["prof_fees"] + detail["profit"]
+        hard_soft = detail["construction_costs"] + detail["prof_fees"]
+        hard_soft_scope = hard_soft + (detail["total_dc"] if pct_gdv_scope == "Hard + soft (includes prof fees)" else 0.0)
+
         st.write(
             {
                 "Proposed bulk (m²)": round(detail["proposed_bulk"], 1),
@@ -824,17 +830,18 @@ if detail:
                 "IH sellable (m²)": round(detail["ih_sellable"], 1),
                 "Exit price (R/m² sellable)": round(market_price, 0),
                 "Construction (R)": round(detail["construction_costs"], 0),
-                "DC total (R)": round(detail["total_dc"], 0),
                 "Professional fees (R)": round(detail["prof_fees"], 0),
+                "Costs (Hard+Soft) (R)": round(hard_soft, 0),
+                "Costs (Hard+Soft per scope) (R)": round(hard_soft_scope, 0),
+                "DC total (R)": round(detail["total_dc"], 0),
                 "Profit (R)": round(detail["profit"], 0),
-                "Total costs incl profit (R)": round(total_costs, 0),
                 "GDV (R)": round(detail["gdv"], 0),
                 "RLV (R)": round(detail["rlv"], 0),
                 "Effective bonus (%)": round(detail["adj_bonus_pct"], 2),
                 "Fees rate (%)": round(detail["adj_fees_rate"] * 100, 2),
                 "Profit rate (%)": round(detail["adj_profit_rate"] * 100, 2),
+                "%GDV scope": pct_gdv_scope,
             }
         )
 else:
     st.caption("Tip: click any cell to pin it and see the breakdown.")
-

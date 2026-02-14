@@ -1,3 +1,43 @@
+import streamlit as st
+import os
+
+ASSETS_DIR = "assets"
+ICON = os.path.join(ASSETS_DIR, "residuo_D_glyph_transparent_256_clean.png")
+WORD_DARK = os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_lighttext_1200w_clean.png")  # white text
+WORD_LIGHT = os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_darktext_1200w_clean.png")  # dark text
+
+def exists(path: str) -> bool:
+    try:
+        return os.path.exists(path)
+    except Exception:
+        return False
+
+# Must be first Streamlit call:
+st.set_page_config(
+    page_title="Residuo",
+    page_icon=ICON if exists(ICON) else "🏗️",
+    layout="wide",
+)
+
+theme = st.get_option("theme.base") or "light"
+wordmark = WORD_DARK if theme == "dark" else WORD_LIGHT
+
+# Optional: TEMP debug to confirm Streamlit Cloud sees your assets.
+# Remove once working.
+with st.sidebar.expander("🧪 Branding debug", expanded=False):
+    st.write("Theme base:", theme)
+    st.write("ASSETS_DIR exists:", exists(ASSETS_DIR))
+    if exists(ASSETS_DIR):
+        st.write("assets/ files:", os.listdir(ASSETS_DIR))
+    st.write("ICON exists:", exists(ICON))
+    st.write("WORD_DARK exists:", exists(WORD_DARK))
+    st.write("WORD_LIGHT exists:", exists(WORD_LIGHT))
+
+# Header render
+if exists(wordmark):
+    st.image(wordmark, use_container_width=True)
+else:
+    st.title("Residuo")
 import os
 from dataclasses import dataclass
 from typing import Dict, Any

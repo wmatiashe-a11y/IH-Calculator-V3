@@ -637,12 +637,19 @@ with st.expander("🗺️ City of Cape Town Map Viewer", expanded=False):
     components.iframe(CITYMAP_VIEWER_URL, height=560, scrolling=True)
 
 # =========================
-# SENSITIVITY HEATMAP (clickable + highlighted, no pandas styler)
+# SENSITIVITY HEATMAP (clickable + metric dropdown, no pandas styler)
 # =========================
 st.markdown('<div class="section-title">Sensitivity analysis</div>', unsafe_allow_html=True)
-st.caption("Click a cell to inspect the scenario (IH % × Density Bonus). Values are RLV (R millions).")
+st.caption("Choose a metric, then click a cell to pin and inspect the scenario (IH % × Density Bonus).")
 
-# ---- Heatmap grid controls (kept lightweight)
+# ---- Metric selector
+metric = st.selectbox(
+    "Heatmap metric",
+    ["RLV (R m)", "GDV (R m)", "Profit (R m)", "Total Costs (R m)"],
+    index=0,
+)
+
+# ---- Grid controls (kept lightweight)
 with st.expander("Heatmap settings", expanded=False):
     ih_step = st.select_slider("IH step (%)", options=[5, 10], value=10)
     ih_max = st.slider("IH max (%)", min_value=10, max_value=30, value=30, step=5)
@@ -652,10 +659,23 @@ with st.expander("Heatmap settings", expanded=False):
 ih_levels = list(range(0, ih_max + 1, ih_step))
 bonus_levels = list(range(0, bonus_max + 1, bonus_step))
 
-# Build matrix (R millions) + keep the full detail results for quick lookup on click
-z = []
-detail_cache = {}  # (ih, bonus) -> result dict
+# ---- Cache results for click breakdown
+detail_cache = {}  # (ih, bonus) -> model result dict
 
+def _metric_value(res: dict) -> float:
+    """Return value in R millions for chosen heatmap metric."""
+    if metric.startswith("RLV"):
+        return res["rlv"] / 1_000_000.0
+    if metric.startswith("GDV"):
+        return res["gdv"] / 1_000_000.0
+    if metric.startswith("Profit"):
+        return res["profit"] / 1_000_000.0
+    # Total Costs (Construction + DC + Fees + Profit)
+    total_costs = res["construction_costs"] + res["total_dc"] + res["prof_fees"] + res["profit"]
+    return total_costs / 1_000_000.0
+
+# ---- Build matrix for selected metric
+z = []
 for ih in ih_levels:
     row = []
     for bonus in bonus_levels:
@@ -678,7 +698,7 @@ for ih in ih_levels:
             pct_gdv_scope=pct_gdv_scope,
         )
         detail_cache[(ih, bonus)] = tmp
-        row.append(tmp["rlv"] / 1_000_000.0)
+        row.append(_metric_value(tmp))
     z.append(row)
 
 x_labels = [f"{b}% Bonus" for b in bonus_levels]
@@ -687,12 +707,19 @@ y_labels = [f"{i}% IH" for i in ih_levels]
 zmin = min(min(r) for r in z) if z else 0.0
 zmax = max(max(r) for r in z) if z else 0.0
 
-# Ensure a persistent selection store
+# ---- Persist selection across reruns AND across metric switches
 if "sens_selected" not in st.session_state:
-    # default selection = middle-ish cell
-    st.session_state.sens_selected = {"ih": ih_levels[min(2, len(ih_levels) - 1)], "bonus": bonus_levels[min(1, len(bonus_levels) - 1)]}
+    st.session_state.sens_selected = {
+        "ih": ih_levels[min(2, len(ih_levels) - 1)],
+        "bonus": bonus_levels[min(1, len(bonus_levels) - 1)],
+    }
 
-# Base heatmap
+sel_ih = st.session_state.sens_selected.get("ih")
+sel_bonus = st.session_state.sens_selected.get("bonus")
+sel_x_label = f"{sel_bonus}% Bonus"
+sel_y_label = f"{sel_ih}% IH"
+
+# ---- Heatmap figure
 fig = go.Figure(
     data=go.Heatmap(
         z=z,
@@ -702,29 +729,22 @@ fig = go.Figure(
         zmax=zmax,
         hovertemplate=(
             "<b>%{y}</b> × <b>%{x}</b><br>"
-            "RLV: <b>R %{z:.1f}M</b><extra></extra>"
+            f"{metric.split('(')[0].strip()}: <b>R %{{z:.1f}}M</b><extra></extra>"
         ),
-        colorbar=dict(title="RLV (R m)"),
+        colorbar=dict(title=metric),
     )
 )
 
 fig.update_layout(
-    height=440,
+    height=460,
     margin=dict(l=10, r=10, t=20, b=10),
     xaxis=dict(title="Density Bonus"),
     yaxis=dict(title="Inclusionary Housing %"),
     clickmode="event+select",
 )
 
-# Add highlight marker for last selected (persisted)
-sel_ih = st.session_state.sens_selected.get("ih")
-sel_bonus = st.session_state.sens_selected.get("bonus")
-sel_x_label = f"{sel_bonus}% Bonus"
-sel_y_label = f"{sel_ih}% IH"
-
-# Only draw marker if labels exist in current grid
+# ---- Highlight marker overlay for the pinned selection
 if sel_x_label in x_labels and sel_y_label in y_labels:
-    # Marker overlay (no explicit color needed; Plotly defaults are fine)
     fig.add_trace(
         go.Scatter(
             x=[sel_x_label],
@@ -738,7 +758,7 @@ if sel_x_label in x_labels and sel_y_label in y_labels:
         )
     )
 
-# Render chart with selection enabled
+# ---- Render and capture click selection (Streamlit >= 1.36)
 state = st.plotly_chart(
     fig,
     use_container_width=True,
@@ -762,40 +782,54 @@ if not points:
     except Exception:
         points = []
 
-# ---- Update persistent selection if user clicked
+# ---- Update pinned selection if clicked
 if points:
     p = points[0]
-    sel_x = p.get("x")  # "20% Bonus"
-    sel_y = p.get("y")  # "10% IH"
+    sx = p.get("x")  # "20% Bonus"
+    sy = p.get("y")  # "10% IH"
     try:
-        new_bonus = int(str(sel_x).split("%")[0])
-        new_ih = int(str(sel_y).split("%")[0])
+        new_bonus = int(str(sx).split("%")[0])
+        new_ih = int(str(sy).split("%")[0])
         st.session_state.sens_selected = {"ih": new_ih, "bonus": new_bonus}
         sel_ih, sel_bonus = new_ih, new_bonus
     except Exception:
         pass
 
-# ---- Show the selected scenario detail panel
+# ---- Detail panel for pinned scenario
 detail = detail_cache.get((sel_ih, sel_bonus))
 if detail:
     st.markdown("#### Selected scenario")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("IH %", f"{sel_ih}%")
     c2.metric("Density Bonus", f"{sel_bonus}%")
-    c3.metric("RLV", f"R {detail['rlv']/1_000_000:.1f}M")
-    c4.metric("GDV", f"R {detail['gdv']/1_000_000:.1f}M")
+
+    # Main metric card mirrors dropdown
+    c3.metric(metric.split("(")[0].strip(), f"R {_metric_value(detail):.1f}M")
+    c4.metric("RLV (R m)", f"R {detail['rlv']/1_000_000:.1f}M")
+
+    # Show additional summary row
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("GDV (R m)", f"R {detail['gdv']/1_000_000:.1f}M")
+    d2.metric("Profit (R m)", f"R {detail['profit']/1_000_000:.1f}M")
+    d3.metric("DCs (R m)", f"R {detail['total_dc']/1_000_000:.1f}M")
+    d4.metric("Fees (R m)", f"R {detail['prof_fees']/1_000_000:.1f}M")
 
     with st.expander("Scenario breakdown", expanded=False):
+        total_costs = detail["construction_costs"] + detail["total_dc"] + detail["prof_fees"] + detail["profit"]
         st.write(
             {
                 "Proposed bulk (m²)": round(detail["proposed_bulk"], 1),
                 "Proposed sellable (m²)": round(detail["proposed_sellable"], 1),
                 "Market sellable (m²)": round(detail["market_sellable"], 1),
                 "IH sellable (m²)": round(detail["ih_sellable"], 1),
-                "DC total (R)": round(detail["total_dc"], 0),
+                "Exit price (R/m² sellable)": round(market_price, 0),
                 "Construction (R)": round(detail["construction_costs"], 0),
+                "DC total (R)": round(detail["total_dc"], 0),
                 "Professional fees (R)": round(detail["prof_fees"], 0),
                 "Profit (R)": round(detail["profit"], 0),
+                "Total costs incl profit (R)": round(total_costs, 0),
+                "GDV (R)": round(detail["gdv"], 0),
+                "RLV (R)": round(detail["rlv"], 0),
                 "Effective bonus (%)": round(detail["adj_bonus_pct"], 2),
                 "Fees rate (%)": round(detail["adj_fees_rate"] * 100, 2),
                 "Profit rate (%)": round(detail["adj_profit_rate"] * 100, 2),
@@ -803,3 +837,4 @@ if detail:
         )
 else:
     st.caption("Tip: click any cell to pin it and see the breakdown.")
+

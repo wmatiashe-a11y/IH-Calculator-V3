@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Dict, Any
 
 import streamlit as st
@@ -30,7 +30,7 @@ def safe_exists(path: str) -> bool:
 def current_theme_base() -> str:
     """
     Returns 'light' or 'dark' based on Streamlit theme.
-    If not available, default to 'light'.
+    Defaults to 'light' if unavailable.
     """
     try:
         base = st.get_option("theme.base")
@@ -42,12 +42,11 @@ def current_theme_base() -> str:
 
 
 def brand_wordmark_path() -> str:
-    base = current_theme_base()
     # If dark theme -> use white wordmark; else use dark wordmark
-    return WORDMARK_D_LIGHTTEXT if base == "dark" else WORDMARK_D_DARKTEXT
+    return WORDMARK_D_LIGHTTEXT if current_theme_base() == "dark" else WORDMARK_D_DARKTEXT
 
 
-# IMPORTANT: set_page_config must be first Streamlit call
+# IMPORTANT: set_page_config must be the first Streamlit call
 st.set_page_config(
     page_title="Residuo — Residual Land Value Calculator",
     page_icon=ICON_D if safe_exists(ICON_D) else "🏗️",
@@ -90,7 +89,7 @@ class Inputs:
     prof_fees_rate: float = 0.12         # professional fees as % of construction
     contingency_rate: float = 0.05       # contingency as % of construction
     marketing_rate: float = 0.02         # marketing as % of GDV
-    finance_rate: float = 0.08           # finance as % of total costs (proxy)
+    finance_rate: float = 0.08           # finance as % of base costs (proxy)
     other_costs: float = 0.0
 
     # Profit
@@ -101,8 +100,8 @@ def calc_rlv(i: Inputs) -> Dict[str, Any]:
     """
     Simple, transparent RLV scaffold:
     - GFA = plot_size * floor_factor
-    - NSA (sellable) = GFA * efficiency
-    - GDV = NSA * exit_price
+    - Sellable area = GFA * efficiency
+    - GDV = sellable * exit_price
     - Construction = GFA * build_cost
     - Prof fees + contingency based on construction
     - Marketing based on GDV
@@ -111,8 +110,8 @@ def calc_rlv(i: Inputs) -> Dict[str, Any]:
     - Residual Land Value = GDV - (all costs + profit)
     """
     gfa = i.plot_size_sqm * i.floor_factor
-    nsa = gfa * i.efficiency
-    gdv = nsa * i.exit_price_per_sqm
+    sellable = gfa * i.efficiency
+    gdv = sellable * i.exit_price_per_sqm
 
     construction = gfa * i.build_cost_per_sqm
     prof_fees = construction * i.prof_fees_rate
@@ -133,7 +132,7 @@ def calc_rlv(i: Inputs) -> Dict[str, Any]:
         "floor_factor": i.floor_factor,
         "gfa_sqm": gfa,
         "efficiency": i.efficiency,
-        "sellable_sqm": nsa,
+        "sellable_sqm": sellable,
 
         # Revenue
         "exit_price_per_sqm": i.exit_price_per_sqm,
@@ -162,7 +161,7 @@ def calc_rlv(i: Inputs) -> Dict[str, Any]:
 
     return {
         "gfa_sqm": gfa,
-        "sellable_sqm": nsa,
+        "sellable_sqm": sellable,
         "gdv": gdv,
         "total_costs": total_costs,
         "profit": profit,
@@ -174,16 +173,17 @@ def calc_rlv(i: Inputs) -> Dict[str, Any]:
 # ----------------------------
 # UI
 # ----------------------------
-# Top brand bar
+# Top brand bar (icon + wordmark)
 brand_path = brand_wordmark_path()
-left, right = st.columns([1, 3], vertical_alignment="center")
-with left:
+
+h1, h2 = st.columns([1, 6], vertical_alignment="center")
+with h1:
     if safe_exists(ICON_D):
-        st.image(ICON_D, width=64)
+        st.image(ICON_D, width=56)
     else:
         st.markdown("🏗️")
 
-with right:
+with h2:
     if safe_exists(brand_path):
         st.image(brand_path, use_container_width=True)
     else:
@@ -238,11 +238,15 @@ st.subheader("Audit")
 audit = result["audit"]
 
 rows = []
-def add_section(title):
+
+
+def add_section(title: str):
     rows.append({"Section": title, "Key": "", "Value": ""})
 
-def add_row(section, key, value):
+
+def add_row(section: str, key: str, value: str):
     rows.append({"Section": section, "Key": key, "Value": value})
+
 
 add_section("Areas")
 add_row("Areas", "Plot size (m²)", f"{audit['plot_size_sqm']:,.0f}")
@@ -276,13 +280,7 @@ add_row("Profit + Land", "RLV", money(audit["rlv"]))
 add_row("Profit + Land", "RLV per plot m²", money(audit["rlv_per_plot_sqm"]))
 
 df = pd.DataFrame(rows)
-
-# Make section header rows visually distinct without Pandas Styler (Arrow-safe)
-def is_section_row(r):
-    return r["Key"] == "" and r["Value"] == ""
-
-df_display = df.copy()
-st.dataframe(df_display, use_container_width=True, hide_index=True)
+st.dataframe(df, use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -299,11 +297,25 @@ ICON = os.path.join(ASSETS_DIR, "residuo_D_glyph_transparent_256_clean.png")
 WORD_DARK = os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_lighttext_1200w_clean.png")  # white text
 WORD_LIGHT = os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_darktext_1200w_clean.png")  # dark text
 
-st.set_page_config(page_title="Residuo", page_icon=ICON)
+def exists(path: str) -> bool:
+    try:
+        return os.path.exists(path)
+    except Exception:
+        return False
+
+st.set_page_config(
+    page_title="Residuo",
+    page_icon=ICON if exists(ICON) else "🏗️",
+    layout="wide",
+)
 
 theme = st.get_option("theme.base") or "light"
 wordmark = WORD_DARK if theme == "dark" else WORD_LIGHT
-st.image(wordmark, use_container_width=True)
+
+if exists(wordmark):
+    st.image(wordmark, use_container_width=True)
+else:
+    st.title("Residuo")
 """,
     language="python",
 )

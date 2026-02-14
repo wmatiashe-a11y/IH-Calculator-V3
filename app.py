@@ -645,7 +645,7 @@ st.caption("Click a cell to inspect the scenario (IH % × Density Bonus). Values
 ih_levels = [0, 10, 20, 30]
 bonus_levels = [0, 20, 40]
 
-# Build raw numeric matrix (R millions)
+# Build matrix (R millions)
 z = []
 for ih in ih_levels:
     row = []
@@ -668,20 +668,22 @@ for ih in ih_levels:
             base_cost_pct_gdv=const_cost_pct_gdv,
             pct_gdv_scope=pct_gdv_scope,
         )
-        row.append(tmp["rlv"] / 1_000_000.0)  # R millions
+        row.append(tmp["rlv"] / 1_000_000.0)
     z.append(row)
 
 x_labels = [f"{b}% Bonus" for b in bonus_levels]
 y_labels = [f"{i}% IH" for i in ih_levels]
 
-# Heatmap figure
-heat = go.Figure(
+zmin = min(min(r) for r in z) if z else 0.0
+zmax = max(max(r) for r in z) if z else 0.0
+
+fig = go.Figure(
     data=go.Heatmap(
         z=z,
         x=x_labels,
         y=y_labels,
-        zmin=min(min(r) for r in z),
-        zmax=max(max(r) for r in z),
+        zmin=zmin,
+        zmax=zmax,
         hovertemplate=(
             "<b>%{y}</b> × <b>%{x}</b><br>"
             "RLV: <b>R %{z:.1f}M</b><extra></extra>"
@@ -690,36 +692,45 @@ heat = go.Figure(
     )
 )
 
-heat.update_layout(
+fig.update_layout(
     height=420,
     margin=dict(l=10, r=10, t=20, b=10),
     xaxis=dict(title="Density Bonus"),
     yaxis=dict(title="Inclusionary Housing %"),
+    clickmode="event+select",  # helps Plotly emit selection events
 )
 
-# Click support (Streamlit >= 1.36)
-sel = st.plotly_chart(
-    heat,
+state = st.plotly_chart(
+    fig,
     use_container_width=True,
     key="sens_heatmap",
     on_select="rerun",
 )
 
-# If a point is selected, decode indices and show the scenario details
-selected = None
+# ---- Extract selection points robustly (Streamlit versions differ)
+points = []
 try:
-    # Newer Streamlit returns an object with .selection (dict)
-    selection_dict = getattr(sel, "selection", None)
-    if selection_dict and selection_dict.get("points"):
-        selected = selection_dict["points"][0]
+    # object with .selection dict
+    sel = getattr(state, "selection", None)
+    if isinstance(sel, dict):
+        points = sel.get("points", []) or []
 except Exception:
-    selected = None
+    pass
 
-if selected:
-    # Plotly gives x/y labels; map them back to numeric levels
-    sel_x = selected.get("x")  # e.g. "20% Bonus"
-    sel_y = selected.get("y")  # e.g. "10% IH"
+if not points:
+    try:
+        # sometimes state can be dict-like
+        if isinstance(state, dict):
+            points = (state.get("selection", {}) or {}).get("points", []) or []
+    except Exception:
+        pass
 
+if points:
+    p = points[0]
+    sel_x = p.get("x")  # e.g. "20% Bonus"
+    sel_y = p.get("y")  # e.g. "10% IH"
+
+    # Convert labels back to numbers
     bonus = int(str(sel_x).split("%")[0])
     ih = int(str(sel_y).split("%")[0])
 

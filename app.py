@@ -5,6 +5,7 @@
 # ✅ Clickable Plotly heatmap with metric dropdown (RLV/GDV/Profit/Costs)
 # ✅ Costs metric = Hard+Soft ONLY (never includes DCs)
 # ✅ Scenario breakdown includes IH exit price (R/m² sellable)
+# ✅ NEW: IH exit price slider under "2) Policy" (R10k–R30k)
 
 import os
 from dataclasses import dataclass
@@ -20,9 +21,8 @@ import streamlit.components.v1 as components
 APP_NAME = "Residuo"
 TAGLINE = "Unlock Land's True Value"
 
-# Use the files you actually have in /assets (per your screenshot)
 LOGO_PATH = "assets/residuo_D_wordmark_transparent_darktext_1200w_clean.png"
-ICON_PATH = "assets/residuo_D_glyph_transparent_256_clean.png"  # square-ish glyph works well as favicon
+ICON_PATH = "assets/residuo_D_glyph_transparent_256_clean.png"
 
 # =========================
 # CITY MAP VIEWER
@@ -43,7 +43,8 @@ ZONING_PRESETS = {
 
 DC_BASE_RATE = 514.10
 ROADS_TRANSPORT_PORTION = 285.35
-IH_PRICE_PER_M2 = 15000  # IH capped exit price (assumption; sellable m²)
+
+IH_EXIT_PRICE_DEFAULT = 15000  # default IH exit price (R/m² sellable)
 
 COST_TIERS = {
     "Economic (R10,000/m²)": 10000.0,
@@ -101,7 +102,6 @@ def fmt_pct(x: float, dp: int = 1) -> str:
 page_icon = ICON_PATH if _file_exists(ICON_PATH) else "🏗️"
 st.set_page_config(page_title=APP_NAME, page_icon=page_icon, layout="wide")
 
-# Clean, professional CSS
 st.markdown(
     """
     <style>
@@ -178,7 +178,6 @@ def apply_heritage_overlay(
     if not overlay.enabled:
         return density_bonus_pct, base_cost_value, base_fees_rate, base_profit_rate
 
-    # overlay overrides bonus by suppressing density bonus (your requirement)
     adj_bonus = max(0.0, density_bonus_pct * (1.0 - overlay.bulk_reduction_pct / 100.0))
     adj_cost = base_cost_value * (1.0 + overlay.cost_uplift_pct / 100.0)
     adj_fees = base_fees_rate * (1.0 + overlay.fees_uplift_pct / 100.0)
@@ -310,14 +309,12 @@ def compute_model(
 
     gdv = (market_sellable * market_price_per_sellable_m2) + (ih_sellable * ih_price_per_sellable_m2)
 
-    adj_cost_sqm = None
-    adj_cost_pct_gdv = None
-
     if cost_mode == "R / m²":
         adj_cost_sqm = adj_cost_input
         construction_costs = proposed_bulk * adj_cost_sqm
         hard_plus_dc = construction_costs + total_dc
         prof_fees = hard_plus_dc * adj_fees_rate
+        adj_cost_pct_gdv = None
     else:
         adj_cost_pct_gdv = adj_cost_input
 
@@ -331,6 +328,8 @@ def compute_model(
             construction_costs = max(0.0, construction_costs)
             hard_plus_dc = construction_costs + total_dc
             prof_fees = hard_plus_dc * adj_fees_rate
+
+        adj_cost_sqm = None
 
     profit = gdv * adj_profit_rate
     rlv = gdv - (construction_costs + total_dc + prof_fees + profit)
@@ -380,6 +379,15 @@ st.sidebar.markdown("### 2) Policy")
 ih_percent = st.sidebar.slider("Inclusionary Housing (%)", 0, 30, 20)
 density_bonus = st.sidebar.slider("Density Bonus (%)", 0, 50, 20)
 
+# ✅ NEW: IH exit price slider (sellable m²)
+ih_exit_price = st.sidebar.slider(
+    "IH Exit Price (R / sellable m²)",
+    min_value=10000,
+    max_value=30000,
+    value=int(IH_EXIT_PRICE_DEFAULT),
+    step=500,
+)
+
 st.sidebar.markdown("### 3) 2026 Benchmarks")
 efficiency_ratio = st.sidebar.slider("Efficiency Ratio (sellable ÷ bulk)", 0.60, 0.95, 0.85, step=0.01)
 profit_margin = st.sidebar.slider("Developer Profit (% of GDV)", 10, 30, 20) / 100.0
@@ -389,7 +397,6 @@ tier_cost_default = COST_TIERS[build_tier]
 st.sidebar.markdown("### 4) Exit Prices")
 exit_price_source = st.sidebar.radio("Exit price source", ["Suburb database", "Manual entry"], index=0)
 
-# Exit price DB UI (sidebar cont.)
 db = load_exit_price_db()
 with st.sidebar.expander("Manage suburb database", expanded=False):
     uploaded = st.file_uploader("Upload CSV (suburb + min/max)", type=["csv"])
@@ -435,7 +442,6 @@ if exit_price_source == "Suburb database":
 else:
     market_price = st.sidebar.number_input("Market Exit Price (R / sellable m²)", value=35000.0, min_value=0.0, step=500.0)
 
-# Fees + cost mode
 st.sidebar.markdown("### 5) Professional fees")
 default_components = default_prof_fee_components_scaled_to_target()
 with st.sidebar.expander("Fee components (sum of items)", expanded=False):
@@ -502,7 +508,7 @@ res = compute_model(
     ih_pct=ih_percent,
     pt_zone_value=pt_zone,
     market_price_per_sellable_m2=market_price,
-    ih_price_per_sellable_m2=IH_PRICE_PER_M2,
+    ih_price_per_sellable_m2=float(ih_exit_price),  # ✅ uses slider
     profit_pct_gdv=profit_margin,
     base_prof_fee_rate=base_prof_fee_rate,
     overlay=heritage_overlay,
@@ -571,7 +577,7 @@ with left:
         st.write("**IH %:**", f"{ih_percent:.0f}%")
         st.write("**Exit price (Market):**", f"R {market_price:,.0f}/m²")
     with a3:
-        st.write("**Hard cost mode:**", cost_mode)
+        st.write("**IH exit price:**", f"R {ih_exit_price:,.0f}/m²")
         st.write("**Fees:**", fmt_pct(res["adj_fees_rate"], 2))
         st.write("**Profit:**", fmt_pct(res["adj_profit_rate"], 1))
 
@@ -612,7 +618,7 @@ with right:
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
 # =========================
-# CITYMAP VIEWER (below KPIs)
+# CITYMAP VIEWER
 # =========================
 with st.expander("🗺️ City of Cape Town Map Viewer", expanded=False):
     st.caption("If the embed is blocked, use the button to open in a new tab.")
@@ -672,7 +678,7 @@ for ih in ih_levels:
             ih_pct=ih,
             pt_zone_value=pt_zone,
             market_price_per_sellable_m2=market_price,
-            ih_price_per_sellable_m2=IH_PRICE_PER_M2,
+            ih_price_per_sellable_m2=float(ih_exit_price),  # ✅ uses slider
             profit_pct_gdv=profit_margin,
             base_prof_fee_rate=base_prof_fee_rate,
             overlay=heritage_overlay,
@@ -725,7 +731,6 @@ fig.update_layout(
     clickmode="event+select",
 )
 
-# highlight marker overlay
 if sel_x_label in x_labels and sel_y_label in y_labels:
     fig.add_trace(
         go.Scatter(
@@ -747,7 +752,6 @@ state = st.plotly_chart(
     on_select="rerun",
 )
 
-# Extract selection robustly
 points = []
 try:
     sel = getattr(state, "selection", None)
@@ -763,11 +767,10 @@ if not points:
     except Exception:
         points = []
 
-# Update pinned selection
 if points:
     p = points[0]
-    sx = p.get("x")  # "20% Bonus"
-    sy = p.get("y")  # "10% IH"
+    sx = p.get("x")
+    sy = p.get("y")
     try:
         new_bonus = int(str(sx).split("%")[0])
         new_ih = int(str(sy).split("%")[0])
@@ -802,7 +805,7 @@ if detail:
                 "IH sellable (m²)": round(detail["ih_sellable"], 1),
 
                 "Market exit price (R/m² sellable)": round(market_price, 0),
-                "IH exit price (R/m² sellable)": round(IH_PRICE_PER_M2, 0),
+                "IH exit price (R/m² sellable)": round(float(ih_exit_price), 0),
 
                 "Construction (R)": round(detail["construction_costs"], 0),
                 "Professional fees (R)": round(detail["prof_fees"], 0),

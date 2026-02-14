@@ -1,3 +1,5 @@
+LOGO_PATH = "assets/residuo_brand.png"
+ICON_PATH = "assets/residuo_icon.png"
 import streamlit as st
 import streamlit.components.v1 as components
 

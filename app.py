@@ -16,8 +16,8 @@ import streamlit.components.v1 as components
 # BRANDING (Residuo)
 # =========================
 TAGLINE = "Unlock Land's True Value"
-LOGO_PATH = "assets/residuo_brand.png"
-ICON_PATH = "assets/residuo_icon.png"  # optional; safe-handled below
+LOGO_PATH = "assets/residuo_D_wordmark_transparent_darktext_1200w_clean.png"
+ICON_PATH = "assets/residuo_D_glyph_transparent_256_clean.png"
 
 
 def _file_exists(path: str) -> bool:

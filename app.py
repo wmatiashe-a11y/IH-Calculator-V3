@@ -637,16 +637,25 @@ with st.expander("🗺️ City of Cape Town Map Viewer", expanded=False):
     components.iframe(CITYMAP_VIEWER_URL, height=560, scrolling=True)
 
 # =========================
-# SENSITIVITY HEATMAP (clickable, no pandas styler)
+# SENSITIVITY HEATMAP (clickable + highlighted, no pandas styler)
 # =========================
 st.markdown('<div class="section-title">Sensitivity analysis</div>', unsafe_allow_html=True)
 st.caption("Click a cell to inspect the scenario (IH % × Density Bonus). Values are RLV (R millions).")
 
-ih_levels = [0, 10, 20, 30]
-bonus_levels = [0, 20, 40]
+# ---- Heatmap grid controls (kept lightweight)
+with st.expander("Heatmap settings", expanded=False):
+    ih_step = st.select_slider("IH step (%)", options=[5, 10], value=10)
+    ih_max = st.slider("IH max (%)", min_value=10, max_value=30, value=30, step=5)
+    bonus_step = st.select_slider("Bonus step (%)", options=[10, 20], value=20)
+    bonus_max = st.slider("Bonus max (%)", min_value=20, max_value=50, value=40, step=10)
 
-# Build matrix (R millions)
+ih_levels = list(range(0, ih_max + 1, ih_step))
+bonus_levels = list(range(0, bonus_max + 1, bonus_step))
+
+# Build matrix (R millions) + keep the full detail results for quick lookup on click
 z = []
+detail_cache = {}  # (ih, bonus) -> result dict
+
 for ih in ih_levels:
     row = []
     for bonus in bonus_levels:
@@ -668,6 +677,7 @@ for ih in ih_levels:
             base_cost_pct_gdv=const_cost_pct_gdv,
             pct_gdv_scope=pct_gdv_scope,
         )
+        detail_cache[(ih, bonus)] = tmp
         row.append(tmp["rlv"] / 1_000_000.0)
     z.append(row)
 
@@ -677,6 +687,12 @@ y_labels = [f"{i}% IH" for i in ih_levels]
 zmin = min(min(r) for r in z) if z else 0.0
 zmax = max(max(r) for r in z) if z else 0.0
 
+# Ensure a persistent selection store
+if "sens_selected" not in st.session_state:
+    # default selection = middle-ish cell
+    st.session_state.sens_selected = {"ih": ih_levels[min(2, len(ih_levels) - 1)], "bonus": bonus_levels[min(1, len(bonus_levels) - 1)]}
+
+# Base heatmap
 fig = go.Figure(
     data=go.Heatmap(
         z=z,
@@ -693,13 +709,36 @@ fig = go.Figure(
 )
 
 fig.update_layout(
-    height=420,
+    height=440,
     margin=dict(l=10, r=10, t=20, b=10),
     xaxis=dict(title="Density Bonus"),
     yaxis=dict(title="Inclusionary Housing %"),
-    clickmode="event+select",  # helps Plotly emit selection events
+    clickmode="event+select",
 )
 
+# Add highlight marker for last selected (persisted)
+sel_ih = st.session_state.sens_selected.get("ih")
+sel_bonus = st.session_state.sens_selected.get("bonus")
+sel_x_label = f"{sel_bonus}% Bonus"
+sel_y_label = f"{sel_ih}% IH"
+
+# Only draw marker if labels exist in current grid
+if sel_x_label in x_labels and sel_y_label in y_labels:
+    # Marker overlay (no explicit color needed; Plotly defaults are fine)
+    fig.add_trace(
+        go.Scatter(
+            x=[sel_x_label],
+            y=[sel_y_label],
+            mode="markers+text",
+            text=["Selected"],
+            textposition="top center",
+            marker=dict(size=16, symbol="circle-open", line=dict(width=3)),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+# Render chart with selection enabled
 state = st.plotly_chart(
     fig,
     use_container_width=True,
@@ -707,56 +746,42 @@ state = st.plotly_chart(
     on_select="rerun",
 )
 
-# ---- Extract selection points robustly (Streamlit versions differ)
+# ---- Extract selection robustly
 points = []
 try:
-    # object with .selection dict
     sel = getattr(state, "selection", None)
     if isinstance(sel, dict):
         points = sel.get("points", []) or []
 except Exception:
-    pass
+    points = []
 
 if not points:
     try:
-        # sometimes state can be dict-like
         if isinstance(state, dict):
             points = (state.get("selection", {}) or {}).get("points", []) or []
     except Exception:
-        pass
+        points = []
 
+# ---- Update persistent selection if user clicked
 if points:
     p = points[0]
-    sel_x = p.get("x")  # e.g. "20% Bonus"
-    sel_y = p.get("y")  # e.g. "10% IH"
+    sel_x = p.get("x")  # "20% Bonus"
+    sel_y = p.get("y")  # "10% IH"
+    try:
+        new_bonus = int(str(sel_x).split("%")[0])
+        new_ih = int(str(sel_y).split("%")[0])
+        st.session_state.sens_selected = {"ih": new_ih, "bonus": new_bonus}
+        sel_ih, sel_bonus = new_ih, new_bonus
+    except Exception:
+        pass
 
-    # Convert labels back to numbers
-    bonus = int(str(sel_x).split("%")[0])
-    ih = int(str(sel_y).split("%")[0])
-
-    detail = compute_model(
-        land_area_m2=land_area,
-        existing_gba_bulk_m2=existing_gba,
-        ff=ff,
-        density_bonus_pct=bonus,
-        efficiency_ratio=efficiency_ratio,
-        ih_pct=ih,
-        pt_zone_value=pt_zone,
-        market_price_per_sellable_m2=market_price,
-        ih_price_per_sellable_m2=IH_PRICE_PER_M2,
-        profit_pct_gdv=profit_margin,
-        base_prof_fee_rate=base_prof_fee_rate,
-        overlay=heritage_overlay,
-        cost_mode=cost_mode,
-        base_cost_sqm=const_cost_sqm,
-        base_cost_pct_gdv=const_cost_pct_gdv,
-        pct_gdv_scope=pct_gdv_scope,
-    )
-
+# ---- Show the selected scenario detail panel
+detail = detail_cache.get((sel_ih, sel_bonus))
+if detail:
     st.markdown("#### Selected scenario")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("IH %", f"{ih}%")
-    c2.metric("Density Bonus", f"{bonus}%")
+    c1.metric("IH %", f"{sel_ih}%")
+    c2.metric("Density Bonus", f"{sel_bonus}%")
     c3.metric("RLV", f"R {detail['rlv']/1_000_000:.1f}M")
     c4.metric("GDV", f"R {detail['gdv']/1_000_000:.1f}M")
 
@@ -777,4 +802,4 @@ if points:
             }
         )
 else:
-    st.caption("Tip: click a cell in the heatmap to view its detailed breakdown.")
+    st.caption("Tip: click any cell to pin it and see the breakdown.")

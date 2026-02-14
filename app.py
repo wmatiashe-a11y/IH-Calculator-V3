@@ -5,7 +5,8 @@
 # ✅ Clickable Plotly heatmap with metric dropdown (RLV/GDV/Profit/Costs)
 # ✅ Costs metric = Hard+Soft ONLY (never includes DCs)
 # ✅ Scenario breakdown includes IH exit price (R/m² sellable)
-# ✅ NEW: IH exit price slider under "2) Policy" (R10k–R30k)
+# ✅ IH exit price slider under "2) Policy" (R10k–R30k)
+# ✅ NEW: Heatmap can optionally use IH exit price Low/Mid/High (or policy slider)
 
 import os
 from dataclasses import dataclass
@@ -44,6 +45,9 @@ ZONING_PRESETS = {
 DC_BASE_RATE = 514.10
 ROADS_TRANSPORT_PORTION = 285.35
 
+IH_EXIT_MIN = 10000
+IH_EXIT_MAX = 30000
+IH_EXIT_MID = int((IH_EXIT_MIN + IH_EXIT_MAX) / 2)
 IH_EXIT_PRICE_DEFAULT = 15000  # default IH exit price (R/m² sellable)
 
 COST_TIERS = {
@@ -379,11 +383,10 @@ st.sidebar.markdown("### 2) Policy")
 ih_percent = st.sidebar.slider("Inclusionary Housing (%)", 0, 30, 20)
 density_bonus = st.sidebar.slider("Density Bonus (%)", 0, 50, 20)
 
-# ✅ NEW: IH exit price slider (sellable m²)
 ih_exit_price = st.sidebar.slider(
     "IH Exit Price (R / sellable m²)",
-    min_value=10000,
-    max_value=30000,
+    min_value=IH_EXIT_MIN,
+    max_value=IH_EXIT_MAX,
     value=int(IH_EXIT_PRICE_DEFAULT),
     step=500,
 )
@@ -496,7 +499,7 @@ heritage_overlay = HeritageOverlay(
 )
 
 # =========================
-# ENGINE RUN
+# ENGINE RUN (main scenario uses Policy IH exit price)
 # =========================
 ff = ZONING_PRESETS[zoning_key]["ff"]
 res = compute_model(
@@ -508,7 +511,7 @@ res = compute_model(
     ih_pct=ih_percent,
     pt_zone_value=pt_zone,
     market_price_per_sellable_m2=market_price,
-    ih_price_per_sellable_m2=float(ih_exit_price),  # ✅ uses slider
+    ih_price_per_sellable_m2=float(ih_exit_price),
     profit_pct_gdv=profit_margin,
     base_prof_fee_rate=base_prof_fee_rate,
     overlay=heritage_overlay,
@@ -601,14 +604,7 @@ with right:
             orientation="v",
             measure=["relative", "relative", "relative", "relative", "relative", "total"],
             x=["GDV", "Construction", "DCs", "Professional Fees", "Profit", "Residual Land"],
-            y=[
-                res["gdv"],
-                -res["construction_costs"],
-                -res["total_dc"],
-                -res["prof_fees"],
-                -res["profit"],
-                res["rlv"],
-            ],
+            y=[res["gdv"], -res["construction_costs"], -res["total_dc"], -res["prof_fees"], -res["profit"], res["rlv"]],
             connector={"line": {"color": "rgb(63, 63, 63)"}},
         )
     )
@@ -626,8 +622,9 @@ with st.expander("🗺️ City of Cape Town Map Viewer", expanded=False):
     components.iframe(CITYMAP_VIEWER_URL, height=560, scrolling=True)
 
 # =========================
-# SENSITIVITY HEATMAP (clickable + metric dropdown)
+# SENSITIVITY HEATMAP
 # Costs metric = Hard+Soft ONLY (never includes DCs)
+# + NEW: heatmap can use IH exit price Low/Mid/High (or policy slider)
 # =========================
 st.markdown('<div class="section-title">Sensitivity analysis</div>', unsafe_allow_html=True)
 st.caption("Choose a metric, then click a cell to pin and inspect the scenario (IH % × Density Bonus).")
@@ -643,6 +640,23 @@ with st.expander("Heatmap settings", expanded=False):
     ih_max = st.slider("IH max (%)", min_value=10, max_value=30, value=30, step=5)
     bonus_step = st.select_slider("Bonus step (%)", options=[10, 20], value=20)
     bonus_max = st.slider("Bonus max (%)", min_value=20, max_value=50, value=40, step=10)
+
+    st.markdown("**IH exit price used in heatmap**")
+    sens_ih_mode = st.radio(
+        "Sensitivity IH price mode",
+        ["Use Policy slider", f"Low ({IH_EXIT_MIN:,})", f"Mid ({IH_EXIT_MID:,})", f"High ({IH_EXIT_MAX:,})"],
+        index=0,
+        horizontal=True,
+    )
+
+if sens_ih_mode.startswith("Low"):
+    ih_exit_price_sens = float(IH_EXIT_MIN)
+elif sens_ih_mode.startswith("Mid"):
+    ih_exit_price_sens = float(IH_EXIT_MID)
+elif sens_ih_mode.startswith("High"):
+    ih_exit_price_sens = float(IH_EXIT_MAX)
+else:
+    ih_exit_price_sens = float(ih_exit_price)
 
 ih_levels = list(range(0, ih_max + 1, ih_step))
 bonus_levels = list(range(0, bonus_max + 1, bonus_step))
@@ -678,7 +692,7 @@ for ih in ih_levels:
             ih_pct=ih,
             pt_zone_value=pt_zone,
             market_price_per_sellable_m2=market_price,
-            ih_price_per_sellable_m2=float(ih_exit_price),  # ✅ uses slider
+            ih_price_per_sellable_m2=float(ih_exit_price_sens),  # ✅ sensitivity IH price
             profit_pct_gdv=profit_margin,
             base_prof_fee_rate=base_prof_fee_rate,
             overlay=heritage_overlay,
@@ -782,6 +796,8 @@ if points:
 detail = detail_cache.get((sel_ih, sel_bonus))
 if detail:
     st.markdown("#### Selected scenario")
+    st.caption(f"IH exit price used in heatmap: **R {ih_exit_price_sens:,.0f}/m² sellable**")
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("IH %", f"{sel_ih}%")
     c2.metric("Density Bonus", f"{sel_bonus}%")
@@ -805,7 +821,7 @@ if detail:
                 "IH sellable (m²)": round(detail["ih_sellable"], 1),
 
                 "Market exit price (R/m² sellable)": round(market_price, 0),
-                "IH exit price (R/m² sellable)": round(float(ih_exit_price), 0),
+                "IH exit price (R/m² sellable)": round(float(ih_exit_price_sens), 0),
 
                 "Construction (R)": round(detail["construction_costs"], 0),
                 "Professional fees (R)": round(detail["prof_fees"], 0),

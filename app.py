@@ -1,43 +1,3 @@
-import streamlit as st
-import os
-
-ASSETS_DIR = "assets"
-ICON = os.path.join(ASSETS_DIR, "residuo_D_glyph_transparent_256_clean.png")
-WORD_DARK = os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_lighttext_1200w_clean.png")  # white text
-WORD_LIGHT = os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_darktext_1200w_clean.png")  # dark text
-
-def exists(path: str) -> bool:
-    try:
-        return os.path.exists(path)
-    except Exception:
-        return False
-
-# Must be first Streamlit call:
-st.set_page_config(
-    page_title="Residuo",
-    page_icon=ICON if exists(ICON) else "🏗️",
-    layout="wide",
-)
-
-theme = st.get_option("theme.base") or "light"
-wordmark = WORD_DARK if theme == "dark" else WORD_LIGHT
-
-# Optional: TEMP debug to confirm Streamlit Cloud sees your assets.
-# Remove once working.
-with st.sidebar.expander("🧪 Branding debug", expanded=False):
-    st.write("Theme base:", theme)
-    st.write("ASSETS_DIR exists:", exists(ASSETS_DIR))
-    if exists(ASSETS_DIR):
-        st.write("assets/ files:", os.listdir(ASSETS_DIR))
-    st.write("ICON exists:", exists(ICON))
-    st.write("WORD_DARK exists:", exists(WORD_DARK))
-    st.write("WORD_LIGHT exists:", exists(WORD_LIGHT))
-
-# Header render
-if exists(wordmark):
-    st.image(wordmark, use_container_width=True)
-else:
-    st.title("Residuo")
 import os
 from dataclasses import dataclass
 from typing import Dict, Any
@@ -70,7 +30,7 @@ def safe_exists(path: str) -> bool:
 def current_theme_base() -> str:
     """
     Returns 'light' or 'dark' based on Streamlit theme.
-    Defaults to 'light' if unavailable.
+    If not available, default to 'light'.
     """
     try:
         base = st.get_option("theme.base")
@@ -86,12 +46,51 @@ def brand_wordmark_path() -> str:
     return WORDMARK_D_LIGHTTEXT if current_theme_base() == "dark" else WORDMARK_D_DARKTEXT
 
 
-# IMPORTANT: set_page_config must be the first Streamlit call
+# IMPORTANT: set_page_config must be first Streamlit call
 st.set_page_config(
     page_title="Residuo — Residual Land Value Calculator",
     page_icon=ICON_D if safe_exists(ICON_D) else "🏗️",
     layout="wide",
 )
+
+# ----------------------------
+# Header branding render (production)
+# ----------------------------
+theme = current_theme_base()
+wordmark = brand_wordmark_path()
+
+h1, h2 = st.columns([1, 8], vertical_alignment="center")
+with h1:
+    if safe_exists(ICON_D):
+        st.image(ICON_D, width=52)
+    else:
+        st.markdown("🏗️")
+
+with h2:
+    if safe_exists(wordmark):
+        # Constrained width so it always appears (prevents giant header)
+        st.image(wordmark, width=520)
+    else:
+        st.title("Residuo")
+        st.caption("Unlock Land’s True Value")
+
+st.divider()
+
+# Sidebar debug (keep ON for now; set expanded=False or remove later)
+st.sidebar.header("Inputs")
+with st.sidebar.expander("🧪 Branding debug", expanded=False):
+    st.write("Theme base:", theme)
+    st.write("cwd:", os.getcwd())
+    st.write("ASSETS_DIR exists:", safe_exists(ASSETS_DIR))
+    if safe_exists(ASSETS_DIR):
+        try:
+            st.write("assets files:", os.listdir(ASSETS_DIR))
+        except Exception as e:
+            st.error(f"Could not list assets/: {e}")
+    st.write("ICON exists:", safe_exists(ICON_D))
+    st.write("WORDMARK lighttext exists:", safe_exists(WORDMARK_D_LIGHTTEXT))
+    st.write("WORDMARK darktext exists:", safe_exists(WORDMARK_D_DARKTEXT))
+    st.write("Chosen wordmark:", wordmark)
 
 
 # ----------------------------
@@ -140,8 +139,8 @@ def calc_rlv(i: Inputs) -> Dict[str, Any]:
     """
     Simple, transparent RLV scaffold:
     - GFA = plot_size * floor_factor
-    - Sellable area = GFA * efficiency
-    - GDV = sellable * exit_price
+    - NSA (sellable) = GFA * efficiency
+    - GDV = NSA * exit_price
     - Construction = GFA * build_cost
     - Prof fees + contingency based on construction
     - Marketing based on GDV
@@ -150,8 +149,8 @@ def calc_rlv(i: Inputs) -> Dict[str, Any]:
     - Residual Land Value = GDV - (all costs + profit)
     """
     gfa = i.plot_size_sqm * i.floor_factor
-    sellable = gfa * i.efficiency
-    gdv = sellable * i.exit_price_per_sqm
+    nsa = gfa * i.efficiency
+    gdv = nsa * i.exit_price_per_sqm
 
     construction = gfa * i.build_cost_per_sqm
     prof_fees = construction * i.prof_fees_rate
@@ -172,7 +171,7 @@ def calc_rlv(i: Inputs) -> Dict[str, Any]:
         "floor_factor": i.floor_factor,
         "gfa_sqm": gfa,
         "efficiency": i.efficiency,
-        "sellable_sqm": sellable,
+        "sellable_sqm": nsa,
 
         # Revenue
         "exit_price_per_sqm": i.exit_price_per_sqm,
@@ -201,7 +200,7 @@ def calc_rlv(i: Inputs) -> Dict[str, Any]:
 
     return {
         "gfa_sqm": gfa,
-        "sellable_sqm": sellable,
+        "sellable_sqm": nsa,
         "gdv": gdv,
         "total_costs": total_costs,
         "profit": profit,
@@ -211,38 +210,8 @@ def calc_rlv(i: Inputs) -> Dict[str, Any]:
 
 
 # ----------------------------
-# UI
+# UI (Inputs)
 # ----------------------------
-# Top brand bar (icon + wordmark)
-brand_path = brand_wordmark_path()
-
-h1, h2 = st.columns([1, 6], vertical_alignment="center")
-with h1:
-    if safe_exists(ICON_D):
-        st.image(ICON_D, width=56)
-    else:
-        st.markdown("🏗️")
-
-with h2:
-    if safe_exists(brand_path):
-        st.image(brand_path, use_container_width=True)
-    else:
-        st.title("Residuo")
-        st.caption("Unlock Land’s True Value")
-
-st.divider()
-
-# Sidebar inputs
-st.sidebar.header("Inputs")
-
-# Quick file presence check (helps debugging on Streamlit Cloud)
-with st.sidebar.expander("✅ Branding status", expanded=False):
-    st.write("Theme base:", current_theme_base())
-    st.write("Icon exists:", safe_exists(ICON_D))
-    st.write("Wordmark (lighttext) exists:", safe_exists(WORDMARK_D_LIGHTTEXT))
-    st.write("Wordmark (darktext) exists:", safe_exists(WORDMARK_D_DARKTEXT))
-
-# Build inputs
 i = Inputs(
     plot_size_sqm=st.sidebar.number_input("Plot size (m²)", min_value=0.0, value=500.0, step=10.0),
     floor_factor=st.sidebar.number_input("Floor factor (FAR)", min_value=0.0, value=2.0, step=0.1),
@@ -262,7 +231,9 @@ i = Inputs(
 
 result = calc_rlv(i)
 
+# ----------------------------
 # Outputs
+# ----------------------------
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("GDV", money(result["gdv"]))
 c2.metric("Total Costs", money(result["total_costs"]))
@@ -273,7 +244,9 @@ st.caption(f"RLV per plot m²: **{money(result['audit']['rlv_per_plot_sqm'])} / 
 
 st.divider()
 
+# ----------------------------
 # Audit table
+# ----------------------------
 st.subheader("Audit")
 audit = result["audit"]
 
@@ -353,7 +326,7 @@ theme = st.get_option("theme.base") or "light"
 wordmark = WORD_DARK if theme == "dark" else WORD_LIGHT
 
 if exists(wordmark):
-    st.image(wordmark, use_container_width=True)
+    st.image(wordmark, width=520)
 else:
     st.title("Residuo")
 """,

@@ -637,15 +637,16 @@ with st.expander("🗺️ City of Cape Town Map Viewer", expanded=False):
     components.iframe(CITYMAP_VIEWER_URL, height=560, scrolling=True)
 
 # =========================
-# SENSITIVITY MATRIX
+# SENSITIVITY HEATMAP (clickable, no pandas styler)
 # =========================
 st.markdown('<div class="section-title">Sensitivity analysis</div>', unsafe_allow_html=True)
-st.caption("RLV (R millions) across IH % and Density Bonus. Uses the same assumptions and overlays currently selected.")
+st.caption("Click a cell to inspect the scenario (IH % × Density Bonus). Values are RLV (R millions).")
 
 ih_levels = [0, 10, 20, 30]
 bonus_levels = [0, 20, 40]
 
-matrix_data = []
+# Build raw numeric matrix (R millions)
+z = []
 for ih in ih_levels:
     row = []
     for bonus in bonus_levels:
@@ -667,21 +668,102 @@ for ih in ih_levels:
             base_cost_pct_gdv=const_cost_pct_gdv,
             pct_gdv_scope=pct_gdv_scope,
         )
-        row.append(tmp["rlv"] / 1_000_000.0)
-    matrix_data.append(row)
+        row.append(tmp["rlv"] / 1_000_000.0)  # R millions
+    z.append(row)
 
-df_matrix = pd.DataFrame(
-    matrix_data,
-    index=[f"{x}% IH" for x in ih_levels],
-    columns=[f"{x}% Bonus" for x in bonus_levels],
+x_labels = [f"{b}% Bonus" for b in bonus_levels]
+y_labels = [f"{i}% IH" for i in ih_levels]
+
+# Heatmap figure
+heat = go.Figure(
+    data=go.Heatmap(
+        z=z,
+        x=x_labels,
+        y=y_labels,
+        zmin=min(min(r) for r in z),
+        zmax=max(max(r) for r in z),
+        hovertemplate=(
+            "<b>%{y}</b> × <b>%{x}</b><br>"
+            "RLV: <b>R %{z:.1f}M</b><extra></extra>"
+        ),
+        colorbar=dict(title="RLV (R m)"),
+    )
 )
 
-# Format nicely without pandas Styler (keeps Arrow-safe)
-df_show = df_matrix.copy()
-for c in df_show.columns:
-    df_show[c] = df_show[c].map(lambda v: f"R {v:.1f}M")
+heat.update_layout(
+    height=420,
+    margin=dict(l=10, r=10, t=20, b=10),
+    xaxis=dict(title="Density Bonus"),
+    yaxis=dict(title="Inclusionary Housing %"),
+)
 
-st.table(df_show)
+# Click support (Streamlit >= 1.36)
+sel = st.plotly_chart(
+    heat,
+    use_container_width=True,
+    key="sens_heatmap",
+    on_select="rerun",
+)
 
-with st.expander("Exit price database (2026 estimates)", expanded=False):
-    st.dataframe(load_exit_price_db(), use_container_width=True)
+# If a point is selected, decode indices and show the scenario details
+selected = None
+try:
+    # Newer Streamlit returns an object with .selection (dict)
+    selection_dict = getattr(sel, "selection", None)
+    if selection_dict and selection_dict.get("points"):
+        selected = selection_dict["points"][0]
+except Exception:
+    selected = None
+
+if selected:
+    # Plotly gives x/y labels; map them back to numeric levels
+    sel_x = selected.get("x")  # e.g. "20% Bonus"
+    sel_y = selected.get("y")  # e.g. "10% IH"
+
+    bonus = int(str(sel_x).split("%")[0])
+    ih = int(str(sel_y).split("%")[0])
+
+    detail = compute_model(
+        land_area_m2=land_area,
+        existing_gba_bulk_m2=existing_gba,
+        ff=ff,
+        density_bonus_pct=bonus,
+        efficiency_ratio=efficiency_ratio,
+        ih_pct=ih,
+        pt_zone_value=pt_zone,
+        market_price_per_sellable_m2=market_price,
+        ih_price_per_sellable_m2=IH_PRICE_PER_M2,
+        profit_pct_gdv=profit_margin,
+        base_prof_fee_rate=base_prof_fee_rate,
+        overlay=heritage_overlay,
+        cost_mode=cost_mode,
+        base_cost_sqm=const_cost_sqm,
+        base_cost_pct_gdv=const_cost_pct_gdv,
+        pct_gdv_scope=pct_gdv_scope,
+    )
+
+    st.markdown("#### Selected scenario")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("IH %", f"{ih}%")
+    c2.metric("Density Bonus", f"{bonus}%")
+    c3.metric("RLV", f"R {detail['rlv']/1_000_000:.1f}M")
+    c4.metric("GDV", f"R {detail['gdv']/1_000_000:.1f}M")
+
+    with st.expander("Scenario breakdown", expanded=False):
+        st.write(
+            {
+                "Proposed bulk (m²)": round(detail["proposed_bulk"], 1),
+                "Proposed sellable (m²)": round(detail["proposed_sellable"], 1),
+                "Market sellable (m²)": round(detail["market_sellable"], 1),
+                "IH sellable (m²)": round(detail["ih_sellable"], 1),
+                "DC total (R)": round(detail["total_dc"], 0),
+                "Construction (R)": round(detail["construction_costs"], 0),
+                "Professional fees (R)": round(detail["prof_fees"], 0),
+                "Profit (R)": round(detail["profit"], 0),
+                "Effective bonus (%)": round(detail["adj_bonus_pct"], 2),
+                "Fees rate (%)": round(detail["adj_fees_rate"] * 100, 2),
+                "Profit rate (%)": round(detail["adj_profit_rate"] * 100, 2),
+            }
+        )
+else:
+    st.caption("Tip: click a cell in the heatmap to view its detailed breakdown.")

@@ -1,11 +1,15 @@
 # app.py — Residuo (IH + RLV Calculator) — POLISHED UI SINGLE FILE
-# ✅ Key outputs now display FLOATS (2 decimal places) instead of whole rands
-# ✅ Everything else unchanged from your last complete version:
-#    - bankability gauge
-#    - live sensitivity selection that follows policy sliders by default
-#    - suburb exit price database
-#    - heritage overlay
-#    - city map viewer
+# ✅ Professional front-end layout (brand header, KPI cards, clean sidebar sections)
+# ✅ Uses your existing asset filenames (wordmark + glyph)
+# ✅ City Map Viewer embed + open-in-new-tab fallback
+# ✅ Clickable Plotly heatmap with metric dropdown (RLV/GDV/Profit/Costs)
+# ✅ Costs metric = Hard+Soft ONLY (never includes DCs)
+# ✅ Scenario breakdown includes IH exit price (R/m² sellable)
+# ✅ IH exit price slider under "2) Policy" (R10k–R30k)
+# ✅ Bankability gauge replaces waterfall
+# ✅ Selected scenario under sensitivity recalculates LIVE
+# ✅ Selected scenario now follows policy sliders by default (pins on click; slider movement unpins)
+# ✅ NEW: Key outputs now includes a Built Heritage overlay BLUE popout (styled card)
 
 import os
 from dataclasses import dataclass
@@ -82,10 +86,9 @@ def _file_exists(path: str) -> bool:
         return False
 
 
-def fmt_money(x: float, dp: int = 0) -> str:
-    """Format currency with optional decimal places."""
+def fmt_money(x: float) -> str:
     try:
-        return f"R {x:,.{dp}f}"
+        return f"R {x:,.0f}"
     except Exception:
         return "—"
 
@@ -108,6 +111,7 @@ st.markdown(
     <style>
       .block-container { padding-top: 1.25rem; padding-bottom: 2rem; }
       [data-testid="stSidebar"] { padding-top: 1rem; }
+
       .kpi-card {
         border: 1px solid rgba(0,0,0,.08);
         border-radius: 16px;
@@ -115,17 +119,48 @@ st.markdown(
         background: rgba(255,255,255,.70);
       }
       .kpi-title { font-size: 0.85rem; opacity: 0.72; margin-bottom: 4px; }
-      .kpi-value { font-size: 1.35rem; font-weight: 700; line-height: 1.1; }
+      .kpi-value { font-size: 1.35rem; font-weight: 800; line-height: 1.1; }
       .kpi-sub { font-size: 0.85rem; opacity: 0.70; margin-top: 4px; }
-      .section-title { font-size: 1.05rem; font-weight: 700; margin: 0.5rem 0 0.25rem; }
+
+      .section-title { font-size: 1.05rem; font-weight: 800; margin: 0.5rem 0 0.25rem; }
       .muted { opacity: 0.75; }
       .hr { height: 1px; background: rgba(0,0,0,.08); margin: 0.75rem 0; }
+
       .badge {
         display: inline-block;
         padding: 2px 10px;
         border-radius: 999px;
         font-size: 0.75rem;
         background: rgba(0,0,0,.05);
+        margin-left: 8px;
+      }
+
+      /* NEW: Heritage popout */
+      .popout-blue {
+        border: 1px solid rgba(17, 99, 255, 0.20);
+        border-left: 6px solid rgba(17, 99, 255, 0.85);
+        background: rgba(17, 99, 255, 0.06);
+        border-radius: 16px;
+        padding: 12px 14px;
+      }
+      .popout-title {
+        font-weight: 800;
+        margin-bottom: 4px;
+        font-size: 0.95rem;
+      }
+      .popout-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px 14px;
+        margin-top: 6px;
+        font-size: 0.90rem;
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        background: rgba(17, 99, 255, 0.10);
         margin-left: 8px;
       }
     </style>
@@ -146,7 +181,7 @@ with h2:
     st.markdown(
         f"""
         <div>
-          <div style="font-size:1.65rem; font-weight:800; line-height:1.05;">{APP_NAME}
+          <div style="font-size:1.65rem; font-weight:900; line-height:1.05;">{APP_NAME}
             <span class="badge">Cape Town Feasibility</span>
           </div>
           <div class="muted" style="margin-top:6px;">{TAGLINE}</div>
@@ -318,7 +353,6 @@ def compute_model(
         adj_cost_pct_gdv = None
     else:
         adj_cost_pct_gdv = adj_cost_input
-
         if pct_gdv_scope == "Hard cost only":
             construction_costs = gdv * adj_cost_pct_gdv
             hard_plus_dc = construction_costs + total_dc
@@ -329,7 +363,6 @@ def compute_model(
             construction_costs = max(0.0, construction_costs)
             hard_plus_dc = construction_costs + total_dc
             prof_fees = hard_plus_dc * adj_fees_rate
-
         adj_cost_sqm = None
 
     profit = gdv * adj_profit_rate
@@ -366,7 +399,143 @@ def compute_model(
 
 
 # =========================
-# SIDEBAR (brand + inputs)
+# BANKABILITY GAUGE (Bullet-style)
+# =========================
+def make_bankability_gauge(
+    res: dict,
+    *,
+    land_area_m2: float,
+    tier_cost_sqm: float,
+    cost_tier_name: str,
+    profit_target: float = 0.20,
+    prof_fee_band: tuple[float, float] = (0.12, 0.15),
+) -> go.Figure:
+    profit_pct = float(res.get("adj_profit_rate", 0.0))
+    fees_pct = float(res.get("adj_fees_rate", 0.0))
+    implied_cost_sqm = float(res.get("implied_cost_sqm", 0.0))
+    rlv = float(res.get("rlv", 0.0))
+    rlv_per_land = (rlv / land_area_m2) if land_area_m2 > 0 else 0.0
+
+    profit_max = 0.30
+    fees_max = 0.20
+    fees_lo, fees_hi = prof_fee_band
+
+    cost_max = max(tier_cost_sqm * 1.6, implied_cost_sqm * 1.25, 1.0)
+    cost_min = 0.0
+
+    rlv_land_max = max(abs(rlv_per_land) * 1.25, 1000.0)
+    rlv_land_min = -rlv_land_max
+
+    labels = [
+        "Profit (as % of GDV)",
+        "Professional fees (as %)",
+        f"Implied hard cost (R/m² bulk) vs {cost_tier_name}",
+        "RLV per m² land",
+    ]
+
+    def norm(v, vmin, vmax):
+        if vmax - vmin == 0:
+            return 0.0
+        return (v - vmin) / (vmax - vmin)
+
+    profit_n = max(0.0, min(1.0, norm(profit_pct, 0.0, profit_max)))
+    fees_n = max(0.0, min(1.0, norm(fees_pct, 0.0, fees_max)))
+    cost_n = max(0.0, min(1.0, norm(implied_cost_sqm, cost_min, cost_max)))
+    rlv_n = max(0.0, min(1.0, norm(rlv_per_land, rlv_land_min, rlv_land_max)))
+
+    profit_target_n = norm(profit_target, 0.0, profit_max)
+    fees_lo_n = norm(fees_lo, 0.0, fees_max)
+    fees_hi_n = norm(fees_hi, 0.0, fees_max)
+    tier_n = norm(tier_cost_sqm, cost_min, cost_max)
+
+    y = list(range(len(labels)))[::-1]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=[1 - profit_target_n], y=[y[0]], base=[profit_target_n],
+        orientation="h", hoverinfo="skip", marker=dict(opacity=0.18), showlegend=False
+    ))
+    fig.add_trace(go.Bar(
+        x=[max(0.0, fees_hi_n - fees_lo_n)], y=[y[1]], base=[fees_lo_n],
+        orientation="h", hoverinfo="skip", marker=dict(opacity=0.18), showlegend=False
+    ))
+    cost_band_lo = max(0.0, tier_cost_sqm * 0.90)
+    cost_band_hi = tier_cost_sqm * 1.10
+    fig.add_trace(go.Bar(
+        x=[max(0.0, norm(cost_band_hi, cost_min, cost_max) - norm(cost_band_lo, cost_min, cost_max))],
+        y=[y[2]], base=[norm(cost_band_lo, cost_min, cost_max)],
+        orientation="h", hoverinfo="skip", marker=dict(opacity=0.18), showlegend=False
+    ))
+
+    fig.add_trace(go.Bar(
+        x=[profit_n, fees_n, cost_n, rlv_n],
+        y=y,
+        orientation="h",
+        marker=dict(line=dict(width=0)),
+        hovertemplate="%{customdata}<extra></extra>",
+        customdata=[
+            f"Profit: {profit_pct*100:.1f}% (target ≥ {profit_target*100:.0f}%)",
+            f"Fees: {fees_pct*100:.2f}% (band {fees_lo*100:.0f}–{fees_hi*100:.0f}%)",
+            f"Implied hard cost: {fmt_money(implied_cost_sqm)} / m² bulk (tier {fmt_money(tier_cost_sqm)})",
+            f"RLV per land: {fmt_money(rlv_per_land)} / m² land",
+        ],
+        showlegend=False,
+    ))
+
+    fig.add_shape(type="line", x0=profit_target_n, x1=profit_target_n, y0=y[0]-0.35, y1=y[0]+0.35,
+                  xref="x", yref="y", line=dict(width=3))
+    fig.add_shape(type="line", x0=fees_lo_n, x1=fees_lo_n, y0=y[1]-0.35, y1=y[1]+0.35,
+                  xref="x", yref="y", line=dict(width=2, dash="dot"))
+    fig.add_shape(type="line", x0=fees_hi_n, x1=fees_hi_n, y0=y[1]-0.35, y1=y[1]+0.35,
+                  xref="x", yref="y", line=dict(width=2, dash="dot"))
+    fig.add_shape(type="line", x0=tier_n, x1=tier_n, y0=y[2]-0.35, y1=y[2]+0.35,
+                  xref="x", yref="y", line=dict(width=2, dash="dot"))
+
+    fig.update_layout(
+        height=430,
+        margin=dict(l=10, r=70, t=10, b=10),
+        xaxis=dict(range=[0, 1.0], showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        annotations=[
+            dict(x=0.0, y=y[0], xref="x", yref="y", text=labels[0], showarrow=False, xanchor="left", yanchor="middle"),
+            dict(x=0.0, y=y[1], xref="x", yref="y", text=labels[1], showarrow=False, xanchor="left", yanchor="middle"),
+            dict(x=0.0, y=y[2], xref="x", yref="y", text=labels[2], showarrow=False, xanchor="left", yanchor="middle"),
+            dict(x=0.0, y=y[3], xref="x", yref="y", text=labels[3], showarrow=False, xanchor="left", yanchor="middle"),
+            dict(x=1.02, y=y[0], xref="x", yref="y", text=f"<b>{profit_pct*100:.1f}%</b>", showarrow=False, xanchor="left"),
+            dict(x=1.02, y=y[1], xref="x", yref="y", text=f"<b>{fees_pct*100:.2f}%</b>", showarrow=False, xanchor="left"),
+            dict(x=1.02, y=y[2], xref="x", yref="y", text=f"<b>{fmt_money(implied_cost_sqm)}/m²</b>", showarrow=False, xanchor="left"),
+            dict(x=1.02, y=y[3], xref="x", yref="y", text=f"<b>{fmt_money(rlv_per_land)}/m²</b>", showarrow=False, xanchor="left"),
+        ],
+    )
+    return fig
+
+
+def render_heritage_popout(overlay: HeritageOverlay, res: dict, base_bonus_pct: float) -> None:
+    if not overlay.enabled:
+        return
+    st.markdown(
+        f"""
+        <div class="popout-blue">
+          <div class="popout-title">🏛️ Built Heritage overlay <span class="pill">Active</span></div>
+          <div class="muted" style="font-size:0.9rem;">
+            Overlay adjusts bonus, costs, fees and profit to reflect heritage controls / approval risk.
+          </div>
+          <div class="popout-grid">
+            <div><b>Bonus suppression</b></div><div>{overlay.bulk_reduction_pct:.0f}%</div>
+            <div><b>Base bonus</b></div><div>{base_bonus_pct:.0f}% → <b>{res["adj_bonus_pct"]:.1f}%</b></div>
+            <div><b>Cost uplift</b></div><div>{overlay.cost_uplift_pct:.0f}%</div>
+            <div><b>Fees uplift</b></div><div>{overlay.fees_uplift_pct:.0f}%</div>
+            <div><b>Profit uplift</b></div><div>{overlay.profit_uplift_pct:.0f}%</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =========================
+# SIDEBAR
 # =========================
 if _file_exists(LOGO_PATH):
     st.sidebar.image(LOGO_PATH, use_container_width=True)
@@ -382,7 +551,6 @@ pt_zone = st.sidebar.selectbox("PT Zone (Parking/DC Discount)", ["Standard", "PT
 st.sidebar.markdown("### 2) Policy")
 ih_percent = st.sidebar.slider("Inclusionary Housing (%)", 0, 30, 20)
 density_bonus = st.sidebar.slider("Density Bonus (%)", 0, 50, 20)
-
 ih_exit_price = st.sidebar.slider(
     "IH Exit Price (R / sellable m²)",
     min_value=10000,
@@ -529,13 +697,12 @@ left, right = st.columns([1.25, 1], vertical_alignment="top")
 with left:
     st.markdown('<div class="section-title">Key outputs</div>', unsafe_allow_html=True)
 
-    # ✅ KEY OUTPUTS NOW FLOAT (2 dp)
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.markdown(
             f"""<div class="kpi-card">
                 <div class="kpi-title">Residual Land Value</div>
-                <div class="kpi-value">{fmt_money(res["rlv"], 2)}</div>
+                <div class="kpi-value">{fmt_money(res["rlv"])}</div>
                 <div class="kpi-sub">After DCs, fees, profit</div>
             </div>""",
             unsafe_allow_html=True,
@@ -544,7 +711,7 @@ with left:
         st.markdown(
             f"""<div class="kpi-card">
                 <div class="kpi-title">GDV</div>
-                <div class="kpi-value">{fmt_money(res["gdv"], 2)}</div>
+                <div class="kpi-value">{fmt_money(res["gdv"])}</div>
                 <div class="kpi-sub">Market + IH revenue</div>
             </div>""",
             unsafe_allow_html=True,
@@ -553,7 +720,7 @@ with left:
         st.markdown(
             f"""<div class="kpi-card">
                 <div class="kpi-title">Development Charges</div>
-                <div class="kpi-value">{fmt_money(res["total_dc"], 2)}</div>
+                <div class="kpi-value">{fmt_money(res["total_dc"])}</div>
                 <div class="kpi-sub">Net increase (market)</div>
             </div>""",
             unsafe_allow_html=True,
@@ -562,11 +729,16 @@ with left:
         st.markdown(
             f"""<div class="kpi-card">
                 <div class="kpi-title">DC Savings</div>
-                <div class="kpi-value">{fmt_money(res["dc_savings"], 2)}</div>
+                <div class="kpi-value">{fmt_money(res["dc_savings"])}</div>
                 <div class="kpi-sub">Vs full DC on all</div>
             </div>""",
             unsafe_allow_html=True,
         )
+
+    # ✅ NEW: Blue popout right under KPIs (to match your desired look)
+    if heritage_overlay.enabled:
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        render_heritage_popout(heritage_overlay, res, base_bonus_pct=float(density_bonus))
 
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
@@ -588,44 +760,19 @@ with left:
     if res["brownfield_credit"]:
         st.warning("⚠️ Existing bulk exceeds proposed bulk. Net increase is zero; no DCs payable (Brownfield Credit).")
 
-    if heritage_overlay.enabled:
-        st.info(
-            f"**🏛️ Built Heritage overlay active**  \n"
-            f"- Bonus suppression: **{heritage_overlay.bulk_reduction_pct:.0f}%** → effective bonus **{res['adj_bonus_pct']:.1f}%**  \n"
-            f"- Cost uplift: **{heritage_overlay.cost_uplift_pct:.0f}%**  \n"
-            f"- Fees uplift: **{heritage_overlay.fees_uplift_pct:.0f}%**  \n"
-            f"- Profit uplift: **{heritage_overlay.profit_uplift_pct:.0f}%**"
-        )
-
 with right:
     st.markdown('<div class="section-title">Bankability gauge</div>', unsafe_allow_html=True)
     st.caption("Quick lender-style checks: profit, fees, cost vs tier benchmark, and RLV per land.")
-
-    # NOTE: Your gauge function was in the prior version; keeping it as-is requires it to exist above.
-    # To keep this file complete, we embed a minimal placeholder gauge if you removed it.
-    # ---- Gauge (minimal inline) ----
-    # If you already have make_bankability_gauge() in your repo, you can remove this and call it directly.
-    def make_bankability_gauge_min(res_: dict) -> go.Figure:
-        # simple single-dial: RLV / GDV
-        gdv_ = float(res_.get("gdv", 0.0)) or 1.0
-        ratio = float(res_.get("rlv", 0.0)) / gdv_
-        ratio_pct = max(-0.5, min(0.5, ratio))  # clamp for display
-        fig_ = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=ratio_pct * 100.0,
-            number={"suffix": "%", "valueformat": ".2f"},
-            title={"text": "RLV as % of GDV (proxy)"},
-            gauge={
-                "axis": {"range": [-50, 50]},
-                "bar": {"thickness": 0.35},
-                "steps": [{"range": [-50, 0]}, {"range": [0, 50]}],
-                "threshold": {"line": {"width": 4}, "value": 0},
-            },
-        ))
-        fig_.update_layout(height=430, margin=dict(l=10, r=10, t=30, b=10))
-        return fig_
-
-    st.plotly_chart(make_bankability_gauge_min(res), use_container_width=True)
+    tier_name = build_tier.split("(")[0].strip()
+    gauge = make_bankability_gauge(
+        res,
+        land_area_m2=float(land_area),
+        tier_cost_sqm=float(tier_cost_default),
+        cost_tier_name=tier_name,
+        profit_target=0.20,
+        prof_fee_band=(0.12, 0.15),
+    )
+    st.plotly_chart(gauge, use_container_width=True)
 
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
@@ -639,8 +786,7 @@ with st.expander("🗺️ City of Cape Town Map Viewer", expanded=False):
 
 # =========================
 # SENSITIVITY HEATMAP (clickable + metric dropdown)
-# ✅ Selected scenario follows policy sliders by default
-# ✅ Selected scenario recomputes LIVE
+# ✅ follows sliders by default; pins on click; slider movement unpins
 # =========================
 st.markdown('<div class="section-title">Sensitivity analysis</div>', unsafe_allow_html=True)
 st.caption("Choose a metric, then click a cell to pin and inspect the scenario (IH % × Density Bonus).")
@@ -710,7 +856,7 @@ def _metric_value(res_: dict) -> float:
     return (res_["construction_costs"] + res_["prof_fees"]) / 1_000_000.0
 
 
-# Build heatmap z using current inputs
+# heatmap Z
 z = []
 for ih in ih_levels:
     row = []
@@ -738,7 +884,6 @@ for ih in ih_levels:
 
 x_labels = [f"{b}% Bonus" for b in bonus_levels]
 y_labels = [f"{i}% IH" for i in ih_levels]
-
 zmin = min(min(r) for r in z) if z else 0.0
 zmax = max(max(r) for r in z) if z else 0.0
 
@@ -759,7 +904,6 @@ fig = go.Figure(
         colorbar=dict(title=metric),
     )
 )
-
 fig.update_layout(
     height=460,
     margin=dict(l=10, r=10, t=20, b=10),
@@ -784,6 +928,7 @@ if sel_x_label in x_labels and sel_y_label in y_labels:
 
 state = st.plotly_chart(fig, use_container_width=True, key="sens_heatmap", on_select="rerun")
 
+# click -> pin
 points = []
 try:
     sel = getattr(state, "selection", None)
@@ -813,6 +958,7 @@ if points:
     except Exception:
         pass
 
+# LIVE recompute selected scenario
 selected_res = compute_model(
     land_area_m2=land_area,
     existing_gba_bulk_m2=existing_gba,
@@ -849,22 +995,22 @@ with st.expander("Scenario breakdown (live)", expanded=False):
     hard_soft = selected_res["construction_costs"] + selected_res["prof_fees"]
     st.write(
         {
-            "Proposed bulk (m²)": round(selected_res["proposed_bulk"], 2),
-            "Proposed sellable (m²)": round(selected_res["proposed_sellable"], 2),
-            "Market sellable (m²)": round(selected_res["market_sellable"], 2),
-            "IH sellable (m²)": round(selected_res["ih_sellable"], 2),
-            "Market exit price (R/m² sellable)": float(market_price),
-            "IH exit price (R/m² sellable)": float(ih_exit_price),
-            "Construction (R)": float(selected_res["construction_costs"]),
-            "Professional fees (R)": float(selected_res["prof_fees"]),
-            "Costs (Hard+Soft) (R)": float(hard_soft),
-            "DC total (R)": float(selected_res["total_dc"]),
-            "Profit (R)": float(selected_res["profit"]),
-            "GDV (R)": float(selected_res["gdv"]),
-            "RLV (R)": float(selected_res["rlv"]),
-            "Effective bonus (%)": float(selected_res["adj_bonus_pct"]),
-            "Fees rate (%)": float(selected_res["adj_fees_rate"] * 100),
-            "Profit rate (%)": float(selected_res["adj_profit_rate"] * 100),
+            "Proposed bulk (m²)": round(selected_res["proposed_bulk"], 1),
+            "Proposed sellable (m²)": round(selected_res["proposed_sellable"], 1),
+            "Market sellable (m²)": round(selected_res["market_sellable"], 1),
+            "IH sellable (m²)": round(selected_res["ih_sellable"], 1),
+            "Market exit price (R/m² sellable)": round(market_price, 0),
+            "IH exit price (R/m² sellable)": round(float(ih_exit_price), 0),
+            "Construction (R)": round(selected_res["construction_costs"], 0),
+            "Professional fees (R)": round(selected_res["prof_fees"], 0),
+            "Costs (Hard+Soft) (R)": round(hard_soft, 0),
+            "DC total (R)": round(selected_res["total_dc"], 0),
+            "Profit (R)": round(selected_res["profit"], 0),
+            "GDV (R)": round(selected_res["gdv"], 0),
+            "RLV (R)": round(selected_res["rlv"], 0),
+            "Effective bonus (%)": round(selected_res["adj_bonus_pct"], 2),
+            "Fees rate (%)": round(selected_res["adj_fees_rate"] * 100, 2),
+            "Profit rate (%)": round(selected_res["adj_profit_rate"] * 100, 2),
             "%GDV scope (calc logic)": pct_gdv_scope,
             "Pinned by click?": bool(st.session_state.get("sens_user_pinned", False)),
         }

@@ -9,6 +9,27 @@ import pandas as pd
 import plotly.graph_objects as go
 from dataclasses import dataclass
 from copy import deepcopy
+import os
+
+# =========================
+# BRAND / ASSETS
+# =========================
+ASSETS_DIR = "assets"
+BRAND_LOGO_CANDIDATES = [
+    os.path.join(ASSETS_DIR, "residuo_brand.png"),
+    os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_darktext_1200w_clean.png"),
+    os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_lighttext_1200w_clean.png"),
+    os.path.join(ASSETS_DIR, "residuo_icon.png"),
+    os.path.join(ASSETS_DIR, "residuo_D_icon_256.png"),
+]
+
+def pick_logo_path() -> str | None:
+    for p in BRAND_LOGO_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
+
+LOGO_PATH = pick_logo_path()
 
 # =========================
 # CONFIG
@@ -60,8 +81,15 @@ PROF_FEE_TARGET_TOTAL = 0.135  # midpoint of ~12–15%
 # PAGE
 # =========================
 st.set_page_config(page_title="ResiDuo — Cape Town Feasibility", layout="wide")
-st.title("ResiDuo — Cape Town Feasibility")
 
+# Header with logo
+h1, h2 = st.columns([0.22, 0.78])
+with h1:
+    if LOGO_PATH:
+        st.image(LOGO_PATH, use_container_width=True)
+with h2:
+    st.title("ResiDuo — Cape Town Feasibility")
+    st.caption("Residual Land Value (RLV) • Inclusionary Housing (IH) • Development Charges (DC) • Sensitivity & scenarios")
 
 # =========================
 # OVERLAY MODEL
@@ -361,10 +389,12 @@ def diff_inputs(current: dict, compare: dict) -> pd.DataFrame:
         b = compare.get(k)
         if a == b:
             continue
+
         def norm(x):
             if isinstance(x, float):
                 return round(x, 6)
             return x
+
         rows.append([k, norm(b), norm(a)])
     return pd.DataFrame(rows, columns=["Parameter", "Compare scenario", "Current"])
 
@@ -548,11 +578,24 @@ with left:
             inputs["heritage_fees_uplift"] = float(st.slider("Fees uplift (%)", 0, 40, int(inputs.get("heritage_fees_uplift", 5)), disabled=dis))
             inputs["heritage_profit_uplift"] = float(st.slider("Profit uplift (%)", 0, 40, int(inputs.get("heritage_profit_uplift", 5)), disabled=dis))
 
-        apply_clicked = st.form_submit_button("✅ Apply inputs", use_container_width=True)
+        # ---- APPLY PATTERN: two submit buttons ----
+        cA, cB = st.columns(2)
+        with cA:
+            apply_only = st.form_submit_button("Apply without saving", use_container_width=True)
+        with cB:
+            save_and_apply = st.form_submit_button("Save & Apply", use_container_width=True)
 
-    if apply_clicked:
+    if apply_only or save_and_apply:
         st.session_state.active_inputs = deepcopy(inputs)
-        st.toast("Inputs applied", icon="✅")
+
+        if save_and_apply:
+            # Save into currently selected scenario (right panel selector determines active_scenario)
+            scen = st.session_state.active_scenario
+            st.session_state.scenarios[scen] = deepcopy(inputs)
+            st.toast(f"Saved → {scen} and applied", icon="💾")
+        else:
+            st.toast("Applied (not saved)", icon="✅")
+
         st.rerun()
 
     # ---- Exit DB management (OUTSIDE the form) ----
@@ -668,6 +711,8 @@ with right:
     scenario_names = list(scenarios.keys())
 
     sel = st.selectbox("Scenario", scenario_names, index=scenario_names.index(st.session_state.active_scenario))
+    # Keep active scenario in sync with selector
+    st.session_state.active_scenario = sel
 
     b1, b2, b3 = st.columns(3)
     with b1:
@@ -684,6 +729,7 @@ with right:
             scenarios[sel] = default_inputs()
             st.session_state.scenarios = scenarios
             st.toast(f"Reset {sel} to defaults", icon="↩️")
+            st.rerun()
 
     st.markdown("**Compare**")
     compare_to = st.selectbox("Compare current vs", scenario_names, index=scenario_names.index(sel))

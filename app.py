@@ -5,7 +5,8 @@
 # ✅ Clickable Plotly heatmap with metric dropdown (RLV/GDV/Profit/Costs)
 # ✅ Costs metric = Hard+Soft ONLY (never includes DCs)
 # ✅ Scenario breakdown includes IH exit price (R/m² sellable)
-# ✅ NEW: IH exit price slider under "2) Policy" (R10k–R30k)
+# ✅ IH exit price slider under "2) Policy" (R10k–R30k)
+# ✅ NEW (this update): Replace Waterfall with Scenario Comparison Bars (GDV allocation bars)
 
 import os
 from dataclasses import dataclass
@@ -361,6 +362,76 @@ def compute_model(
     }
 
 
+def build_scenario_comparison_bars(
+    base_res: dict,
+    selected_res: dict | None,
+    base_label: str,
+    selected_label: str,
+) -> go.Figure:
+    """
+    Horizontal stacked bars showing GDV allocation:
+      Construction + DCs + Prof Fees + Profit + RLV
+    Two bars: Base vs Selected scenario (if selected_res is not None).
+    """
+    labels = ["Construction", "DCs", "Prof Fees", "Profit", "Residual Land (RLV)"]
+
+    def parts(r: dict) -> list[float]:
+        return [
+            max(0.0, float(r.get("construction_costs", 0.0))),
+            max(0.0, float(r.get("total_dc", 0.0))),
+            max(0.0, float(r.get("prof_fees", 0.0))),
+            max(0.0, float(r.get("profit", 0.0))),
+            float(r.get("rlv", 0.0)),
+        ]
+
+    y_cats = [base_label]
+    series = [parts(base_res)]
+
+    if selected_res is not None:
+        y_cats.append(selected_label)
+        series.append(parts(selected_res))
+
+    # Build stacked bars (one trace per component)
+    fig = go.Figure()
+    for i, comp in enumerate(labels):
+        fig.add_trace(
+            go.Bar(
+                name=comp,
+                y=y_cats,
+                x=[s[i] for s in series],
+                orientation="h",
+                hovertemplate=f"{comp}: R %{{x:,.0f}}<extra></extra>",
+            )
+        )
+
+    # Add GDV markers as black lines/markers for each bar
+    gdvs = [float(base_res.get("gdv", 0.0))]
+    if selected_res is not None:
+        gdvs.append(float(selected_res.get("gdv", 0.0)))
+
+    fig.add_trace(
+        go.Scatter(
+            name="GDV",
+            y=y_cats,
+            x=gdvs,
+            mode="markers",
+            marker=dict(size=10, symbol="line-ns-open", line=dict(width=2)),
+            hovertemplate="GDV: R %{x:,.0f}<extra></extra>",
+            showlegend=True,
+        )
+    )
+
+    fig.update_layout(
+        barmode="stack",
+        height=360 if selected_res is not None else 300,
+        margin=dict(l=10, r=10, t=35, b=10),
+        xaxis=dict(title="ZAR", tickformat=","),
+        yaxis=dict(title=""),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
+    )
+    return fig
+
+
 # =========================
 # SIDEBAR (brand + inputs)
 # =========================
@@ -379,7 +450,7 @@ st.sidebar.markdown("### 2) Policy")
 ih_percent = st.sidebar.slider("Inclusionary Housing (%)", 0, 30, 20)
 density_bonus = st.sidebar.slider("Density Bonus (%)", 0, 50, 20)
 
-# ✅ NEW: IH exit price slider (sellable m²)
+# ✅ IH exit price slider (sellable m²)
 ih_exit_price = st.sidebar.slider(
     "IH Exit Price (R / sellable m²)",
     min_value=10000,
@@ -496,7 +567,7 @@ heritage_overlay = HeritageOverlay(
 )
 
 # =========================
-# ENGINE RUN
+# ENGINE RUN (Base scenario = sidebar inputs)
 # =========================
 ff = ZONING_PRESETS[zoning_key]["ff"]
 res = compute_model(
@@ -594,26 +665,28 @@ with left:
         )
 
 with right:
-    st.markdown('<div class="section-title">Residual breakdown</div>', unsafe_allow_html=True)
-    fig = go.Figure(
-        go.Waterfall(
-            name="RLV Breakdown",
-            orientation="v",
-            measure=["relative", "relative", "relative", "relative", "relative", "total"],
-            x=["GDV", "Construction", "DCs", "Professional Fees", "Profit", "Residual Land"],
-            y=[
-                res["gdv"],
-                -res["construction_costs"],
-                -res["total_dc"],
-                -res["prof_fees"],
-                -res["profit"],
-                res["rlv"],
-            ],
-            connector={"line": {"color": "rgb(63, 63, 63)"}},
-        )
-    )
-    fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=430)
-    st.plotly_chart(fig, use_container_width=True)
+    # ✅ Replaced Waterfall with Scenario Comparison Bars (GDV allocation)
+    st.markdown('<div class="section-title">Scenario comparison</div>', unsafe_allow_html=True)
+    st.caption("Stacked bars show GDV allocation into Construction + DCs + Fees + Profit + Residual Land (RLV).")
+
+    # If a sensitivity selection exists, compare Base vs Selected; else show Base only.
+    selected_res = None
+    selected_label = "Selected"
+    base_label = "Base (current inputs)"
+
+    # placeholder, will be filled later after heatmap logic runs:
+    if "sens_selected" in st.session_state and isinstance(st.session_state.sens_selected, dict):
+        try:
+            _ih = int(st.session_state.sens_selected.get("ih"))
+            _bonus = int(st.session_state.sens_selected.get("bonus"))
+            selected_label = f"Selected ({_ih}% IH, {_bonus}% Bonus)"
+        except Exception:
+            pass
+
+    # We'll render a preliminary single-bar chart now; after heatmap selection updates,
+    # we re-render below with the selected scenario (streamlit rerun handles it).
+    fig_bar = build_scenario_comparison_bars(res, None, base_label, selected_label)
+    st.plotly_chart(fig_bar, use_container_width=True)
 
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
@@ -780,7 +853,18 @@ if points:
         pass
 
 detail = detail_cache.get((sel_ih, sel_bonus))
+
+# ✅ Re-render Scenario Comparison Bars with Selected scenario (if available)
 if detail:
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Scenario comparison (Base vs Selected)</div>', unsafe_allow_html=True)
+
+    base_label = "Base (current inputs)"
+    selected_label = f"Selected ({sel_ih}% IH, {sel_bonus}% Bonus)"
+
+    fig_bar = build_scenario_comparison_bars(res, detail, base_label, selected_label)
+    st.plotly_chart(fig_bar, use_container_width=True)
+
     st.markdown("#### Selected scenario")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("IH %", f"{sel_ih}%")
@@ -803,19 +887,15 @@ if detail:
                 "Proposed sellable (m²)": round(detail["proposed_sellable"], 1),
                 "Market sellable (m²)": round(detail["market_sellable"], 1),
                 "IH sellable (m²)": round(detail["ih_sellable"], 1),
-
                 "Market exit price (R/m² sellable)": round(market_price, 0),
                 "IH exit price (R/m² sellable)": round(float(ih_exit_price), 0),
-
                 "Construction (R)": round(detail["construction_costs"], 0),
                 "Professional fees (R)": round(detail["prof_fees"], 0),
                 "Costs (Hard+Soft) (R)": round(hard_soft, 0),
-
                 "DC total (R)": round(detail["total_dc"], 0),
                 "Profit (R)": round(detail["profit"], 0),
                 "GDV (R)": round(detail["gdv"], 0),
                 "RLV (R)": round(detail["rlv"], 0),
-
                 "Effective bonus (%)": round(detail["adj_bonus_pct"], 2),
                 "Fees rate (%)": round(detail["adj_fees_rate"] * 100, 2),
                 "Profit rate (%)": round(detail["adj_profit_rate"] * 100, 2),
@@ -823,7 +903,7 @@ if detail:
             }
         )
 else:
-    st.caption("Tip: click any cell to pin it and see the breakdown.")
+    st.caption("Tip: click any cell to pin it and see the breakdown + scenario comparison bars.")
 
 with st.expander("View exit price database (2026 estimates)"):
     st.dataframe(load_exit_price_db(), use_container_width=True)

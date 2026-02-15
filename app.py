@@ -5,8 +5,9 @@
 # ✅ Clickable Plotly heatmap with metric dropdown (RLV/GDV/Profit/Costs)
 # ✅ Costs metric = Hard+Soft ONLY (never includes DCs)
 # ✅ Scenario breakdown includes IH exit price (R/m² sellable)
-# ✅ NEW: IH exit price slider under "2) Policy" (R10k–R30k)
-# ✅ NEW: Replaces waterfall with Bullet chart / “Bankability gauge”
+# ✅ IH exit price slider under "2) Policy" (R10k–R30k)
+# ✅ Bankability gauge replaces waterfall
+# ✅ FIX: Selected scenario under sensitivity now recalculates LIVE from current inputs
 
 import os
 from dataclasses import dataclass
@@ -336,9 +337,7 @@ def compute_model(
     rlv = gdv - (construction_costs + total_dc + prof_fees + profit)
 
     implied_cost_sqm = (construction_costs / proposed_bulk) if proposed_bulk > 0 else 0.0
-
-    # "Costs (Hard+Soft)" used in sensitivity = construction + fees ONLY (exclude DCs)
-    hard_soft_costs = construction_costs + prof_fees
+    hard_soft_costs = construction_costs + prof_fees  # excludes DCs
 
     return {
         "proposed_bulk": proposed_bulk,
@@ -374,41 +373,26 @@ def make_bankability_gauge(
     res: dict,
     *,
     land_area_m2: float,
-    cost_tier_label: str,
     tier_cost_sqm: float,
     cost_tier_name: str,
     profit_target: float = 0.20,
     prof_fee_band: tuple[float, float] = (0.12, 0.15),
 ) -> go.Figure:
-    """
-    Bullet-style horizontal bars for:
-      - Profit % of GDV vs 20% target
-      - Professional fees % vs 12–15% band
-      - Implied hard cost (R/m² bulk) vs tier benchmark
-      - RLV / m² land (signal only; no universal threshold)
-    """
-    # Values
     profit_pct = float(res.get("adj_profit_rate", 0.0))
     fees_pct = float(res.get("adj_fees_rate", 0.0))
     implied_cost_sqm = float(res.get("implied_cost_sqm", 0.0))
     rlv = float(res.get("rlv", 0.0))
     rlv_per_land = (rlv / land_area_m2) if land_area_m2 > 0 else 0.0
 
-    # Thresholds / ranges
-    # Profit: 0–30% scale with target marker
     profit_max = 0.30
-
-    # Fees: show 0–20% scale with band markers
     fees_max = 0.20
     fees_lo, fees_hi = prof_fee_band
 
-    # Cost: dynamic scale around tier
     cost_max = max(tier_cost_sqm * 1.6, implied_cost_sqm * 1.25, 1.0)
     cost_min = 0.0
 
-    # RLV/land: dynamic scale based on magnitude (for display only)
     rlv_land_max = max(abs(rlv_per_land) * 1.25, 1000.0)
-    rlv_land_min = -rlv_land_max  # allow negative visual
+    rlv_land_min = -rlv_land_max
 
     labels = [
         "Profit (as % of GDV)",
@@ -416,25 +400,17 @@ def make_bankability_gauge(
         f"Implied hard cost (R/m² bulk) vs {cost_tier_name}",
         "RLV per m² land",
     ]
-    values = [profit_pct, fees_pct, implied_cost_sqm, rlv_per_land]
 
-    # For axis, we map each gauge to its own x-range by using different subplots? (We avoid subplots.)
-    # Instead, we normalize each metric into a 0..1 scale for the bullet bars, and annotate with real numbers.
-    # This keeps it single-chart, compact, and easy to render in Streamlit.
-
-    # Normalization helpers
     def norm(v, vmin, vmax):
         if vmax - vmin == 0:
             return 0.0
         return (v - vmin) / (vmax - vmin)
 
-    # Normalized 0..1 values
     profit_n = max(0.0, min(1.0, norm(profit_pct, 0.0, profit_max)))
     fees_n = max(0.0, min(1.0, norm(fees_pct, 0.0, fees_max)))
     cost_n = max(0.0, min(1.0, norm(implied_cost_sqm, cost_min, cost_max)))
     rlv_n = max(0.0, min(1.0, norm(rlv_per_land, rlv_land_min, rlv_land_max)))
 
-    # Band ranges (normalized)
     profit_target_n = norm(profit_target, 0.0, profit_max)
     fees_lo_n = norm(fees_lo, 0.0, fees_max)
     fees_hi_n = norm(fees_hi, 0.0, fees_max)
@@ -444,8 +420,7 @@ def make_bankability_gauge(
 
     fig = go.Figure()
 
-    # Background "good bands" (neutral bands; do not enforce color semantics)
-    # Profit: show target region (profit_target..max) as band
+    # bands
     fig.add_trace(go.Bar(
         x=[1 - profit_target_n],
         y=[y[0]],
@@ -453,11 +428,8 @@ def make_bankability_gauge(
         orientation="h",
         hoverinfo="skip",
         marker=dict(opacity=0.18),
-        name="Target band",
         showlegend=False,
     ))
-
-    # Fees: show acceptable band between lo and hi
     fig.add_trace(go.Bar(
         x=[max(0.0, fees_hi_n - fees_lo_n)],
         y=[y[1]],
@@ -467,8 +439,6 @@ def make_bankability_gauge(
         marker=dict(opacity=0.18),
         showlegend=False,
     ))
-
-    # Cost: show "benchmark" band around tier (±10%)
     cost_band_lo = max(0.0, tier_cost_sqm * 0.90)
     cost_band_hi = tier_cost_sqm * 1.10
     cost_band_lo_n = norm(cost_band_lo, cost_min, cost_max)
@@ -483,9 +453,7 @@ def make_bankability_gauge(
         showlegend=False,
     ))
 
-    # RLV/land: no universal band (skip)
-
-    # Main bullets (actual values)
+    # actual bullets
     fig.add_trace(go.Bar(
         x=[profit_n, fees_n, cost_n, rlv_n],
         y=y,
@@ -501,20 +469,17 @@ def make_bankability_gauge(
         showlegend=False,
     ))
 
-    # Markers (thin lines) for targets
-    # Profit target
+    # markers
     fig.add_shape(type="line", x0=profit_target_n, x1=profit_target_n, y0=y[0]-0.35, y1=y[0]+0.35, xref="x", yref="y",
                   line=dict(width=3))
-    # Fees lo/hi
     fig.add_shape(type="line", x0=fees_lo_n, x1=fees_lo_n, y0=y[1]-0.35, y1=y[1]+0.35, xref="x", yref="y",
                   line=dict(width=2, dash="dot"))
     fig.add_shape(type="line", x0=fees_hi_n, x1=fees_hi_n, y0=y[1]-0.35, y1=y[1]+0.35, xref="x", yref="y",
                   line=dict(width=2, dash="dot"))
-    # Cost tier marker
     fig.add_shape(type="line", x0=tier_n, x1=tier_n, y0=y[2]-0.35, y1=y[2]+0.35, xref="x", yref="y",
                   line=dict(width=2, dash="dot"))
 
-    # Labels and right-side value annotations
+    # labels + values
     annotations = [
         dict(x=0.0, y=y[0], xref="x", yref="y", text=labels[0], showarrow=False, xanchor="left", yanchor="middle"),
         dict(x=0.0, y=y[1], xref="x", yref="y", text=labels[1], showarrow=False, xanchor="left", yanchor="middle"),
@@ -553,7 +518,6 @@ st.sidebar.markdown("### 2) Policy")
 ih_percent = st.sidebar.slider("Inclusionary Housing (%)", 0, 30, 20)
 density_bonus = st.sidebar.slider("Density Bonus (%)", 0, 50, 20)
 
-# ✅ NEW: IH exit price slider (sellable m²)
 ih_exit_price = st.sidebar.slider(
     "IH Exit Price (R / sellable m²)",
     min_value=10000,
@@ -682,7 +646,7 @@ res = compute_model(
     ih_pct=ih_percent,
     pt_zone_value=pt_zone,
     market_price_per_sellable_m2=market_price,
-    ih_price_per_sellable_m2=float(ih_exit_price),  # ✅ uses slider
+    ih_price_per_sellable_m2=float(ih_exit_price),
     profit_pct_gdv=profit_margin,
     base_prof_fee_rate=base_prof_fee_rate,
     overlay=heritage_overlay,
@@ -774,7 +738,6 @@ with right:
     gauge = make_bankability_gauge(
         res,
         land_area_m2=float(land_area),
-        cost_tier_label=build_tier,
         tier_cost_sqm=float(tier_cost_default),
         cost_tier_name=tier_name,
         profit_target=0.20,
@@ -794,7 +757,7 @@ with st.expander("🗺️ City of Cape Town Map Viewer", expanded=False):
 
 # =========================
 # SENSITIVITY HEATMAP (clickable + metric dropdown)
-# Costs metric = Hard+Soft ONLY (never includes DCs)
+# ✅ Selected scenario now recalculates LIVE from current sidebar inputs
 # =========================
 st.markdown('<div class="section-title">Sensitivity analysis</div>', unsafe_allow_html=True)
 st.caption("Choose a metric, then click a cell to pin and inspect the scenario (IH % × Density Bonus).")
@@ -814,9 +777,6 @@ with st.expander("Heatmap settings", expanded=False):
 ih_levels = list(range(0, ih_max + 1, ih_step))
 bonus_levels = list(range(0, bonus_max + 1, bonus_step))
 
-detail_cache = {}  # (ih, bonus) -> model result dict
-
-
 def _metric_value(res_: dict) -> float:
     """Return value in R millions for chosen heatmap metric.
     Costs (Hard+Soft) = construction + professional fees ONLY (never includes DCs).
@@ -827,11 +787,9 @@ def _metric_value(res_: dict) -> float:
         return res_["gdv"] / 1_000_000.0
     if metric.startswith("Profit"):
         return res_["profit"] / 1_000_000.0
+    return (res_["construction_costs"] + res_["prof_fees"]) / 1_000_000.0
 
-    hard_soft = res_["construction_costs"] + res_["prof_fees"]
-    return hard_soft / 1_000_000.0
-
-
+# Build heatmap z using current inputs
 z = []
 for ih in ih_levels:
     row = []
@@ -845,7 +803,7 @@ for ih in ih_levels:
             ih_pct=ih,
             pt_zone_value=pt_zone,
             market_price_per_sellable_m2=market_price,
-            ih_price_per_sellable_m2=float(ih_exit_price),  # ✅ uses slider
+            ih_price_per_sellable_m2=float(ih_exit_price),
             profit_pct_gdv=profit_margin,
             base_prof_fee_rate=base_prof_fee_rate,
             overlay=heritage_overlay,
@@ -854,7 +812,6 @@ for ih in ih_levels:
             base_cost_pct_gdv=const_cost_pct_gdv,
             pct_gdv_scope=pct_gdv_scope,
         )
-        detail_cache[(ih, bonus)] = tmp
         row.append(_metric_value(tmp))
     z.append(row)
 
@@ -864,6 +821,7 @@ y_labels = [f"{i}% IH" for i in ih_levels]
 zmin = min(min(r) for r in z) if z else 0.0
 zmax = max(max(r) for r in z) if z else 0.0
 
+# Persist selection
 if "sens_selected" not in st.session_state:
     st.session_state.sens_selected = {
         "ih": ih_levels[min(2, len(ih_levels) - 1)],
@@ -872,6 +830,14 @@ if "sens_selected" not in st.session_state:
 
 sel_ih = st.session_state.sens_selected.get("ih")
 sel_bonus = st.session_state.sens_selected.get("bonus")
+
+# Clamp selection to current grid (in case user changes step/max)
+if sel_ih not in ih_levels:
+    sel_ih = ih_levels[min(2, len(ih_levels) - 1)]
+if sel_bonus not in bonus_levels:
+    sel_bonus = bonus_levels[min(1, len(bonus_levels) - 1)]
+st.session_state.sens_selected = {"ih": sel_ih, "bonus": sel_bonus}
+
 sel_x_label = f"{sel_bonus}% Bonus"
 sel_y_label = f"{sel_ih}% IH"
 
@@ -898,6 +864,7 @@ fig.update_layout(
     clickmode="event+select",
 )
 
+# show selection marker
 if sel_x_label in x_labels and sel_y_label in y_labels:
     fig.add_trace(
         go.Scatter(
@@ -919,6 +886,7 @@ state = st.plotly_chart(
     on_select="rerun",
 )
 
+# Read click selection
 points = []
 try:
     sel = getattr(state, "selection", None)
@@ -941,52 +909,68 @@ if points:
     try:
         new_bonus = int(str(sx).split("%")[0])
         new_ih = int(str(sy).split("%")[0])
-        st.session_state.sens_selected = {"ih": new_ih, "bonus": new_bonus}
-        sel_ih, sel_bonus = new_ih, new_bonus
+        if new_ih in ih_levels and new_bonus in bonus_levels:
+            st.session_state.sens_selected = {"ih": new_ih, "bonus": new_bonus}
+            sel_ih, sel_bonus = new_ih, new_bonus
     except Exception:
         pass
 
-detail = detail_cache.get((sel_ih, sel_bonus))
-if detail:
-    st.markdown("#### Selected scenario")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("IH %", f"{sel_ih}%")
-    c2.metric("Density Bonus", f"{sel_bonus}%")
-    c3.metric(metric.split("(")[0].strip(), f"R {_metric_value(detail):.1f}M")
-    c4.metric("RLV (R m)", f"R {detail['rlv']/1_000_000:.1f}M")
+# ✅ LIVE recompute selected scenario (always uses CURRENT sidebar inputs)
+selected_res = compute_model(
+    land_area_m2=land_area,
+    existing_gba_bulk_m2=existing_gba,
+    ff=ff,
+    density_bonus_pct=float(sel_bonus),
+    efficiency_ratio=efficiency_ratio,
+    ih_pct=float(sel_ih),
+    pt_zone_value=pt_zone,
+    market_price_per_sellable_m2=market_price,
+    ih_price_per_sellable_m2=float(ih_exit_price),
+    profit_pct_gdv=profit_margin,
+    base_prof_fee_rate=base_prof_fee_rate,
+    overlay=heritage_overlay,
+    cost_mode=cost_mode,
+    base_cost_sqm=const_cost_sqm,
+    base_cost_pct_gdv=const_cost_pct_gdv,
+    pct_gdv_scope=pct_gdv_scope,
+)
 
-    d1, d2, d3, d4 = st.columns(4)
-    d1.metric("GDV (R m)", f"R {detail['gdv']/1_000_000:.1f}M")
-    d2.metric("Profit (R m)", f"R {detail['profit']/1_000_000:.1f}M")
-    d3.metric("DCs (R m)", f"R {detail['total_dc']/1_000_000:.1f}M")
-    d4.metric("Fees (R m)", f"R {detail['prof_fees']/1_000_000:.1f}M")
+st.markdown("#### Selected scenario (live)")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("IH %", f"{int(sel_ih)}%")
+c2.metric("Density Bonus", f"{int(sel_bonus)}%")
+c3.metric(metric.split("(")[0].strip(), f"R {_metric_value(selected_res):.1f}M")
+c4.metric("RLV (R m)", f"R {selected_res['rlv']/1_000_000:.1f}M")
 
-    with st.expander("Scenario breakdown", expanded=False):
-        hard_soft = detail["construction_costs"] + detail["prof_fees"]
+d1, d2, d3, d4 = st.columns(4)
+d1.metric("GDV (R m)", f"R {selected_res['gdv']/1_000_000:.1f}M")
+d2.metric("Profit (R m)", f"R {selected_res['profit']/1_000_000:.1f}M")
+d3.metric("DCs (R m)", f"R {selected_res['total_dc']/1_000_000:.1f}M")
+d4.metric("Fees (R m)", f"R {selected_res['prof_fees']/1_000_000:.1f}M")
 
-        st.write(
-            {
-                "Proposed bulk (m²)": round(detail["proposed_bulk"], 1),
-                "Proposed sellable (m²)": round(detail["proposed_sellable"], 1),
-                "Market sellable (m²)": round(detail["market_sellable"], 1),
-                "IH sellable (m²)": round(detail["ih_sellable"], 1),
-                "Market exit price (R/m² sellable)": round(market_price, 0),
-                "IH exit price (R/m² sellable)": round(float(ih_exit_price), 0),
-                "Construction (R)": round(detail["construction_costs"], 0),
-                "Professional fees (R)": round(detail["prof_fees"], 0),
-                "Costs (Hard+Soft) (R)": round(hard_soft, 0),
-                "DC total (R)": round(detail["total_dc"], 0),
-                "Profit (R)": round(detail["profit"], 0),
-                "GDV (R)": round(detail["gdv"], 0),
-                "RLV (R)": round(detail["rlv"], 0),
-                "Effective bonus (%)": round(detail["adj_bonus_pct"], 2),
-                "Fees rate (%)": round(detail["adj_fees_rate"] * 100, 2),
-                "Profit rate (%)": round(detail["adj_profit_rate"] * 100, 2),
-                "%GDV scope (calc logic)": pct_gdv_scope,
-            }
-        )
-else:
-    st.caption("Tip: click any cell to pin it and see the breakdown.")
+with st.expander("Scenario breakdown (live)", expanded=False):
+    hard_soft = selected_res["construction_costs"] + selected_res["prof_fees"]
+    st.write(
+        {
+            "Proposed bulk (m²)": round(selected_res["proposed_bulk"], 1),
+            "Proposed sellable (m²)": round(selected_res["proposed_sellable"], 1),
+            "Market sellable (m²)": round(selected_res["market_sellable"], 1),
+            "IH sellable (m²)": round(selected_res["ih_sellable"], 1),
+            "Market exit price (R/m² sellable)": round(market_price, 0),
+            "IH exit price (R/m² sellable)": round(float(ih_exit_price), 0),
+            "Construction (R)": round(selected_res["construction_costs"], 0),
+            "Professional fees (R)": round(selected_res["prof_fees"], 0),
+            "Costs (Hard+Soft) (R)": round(hard_soft, 0),
+            "DC total (R)": round(selected_res["total_dc"], 0),
+            "Profit (R)": round(selected_res["profit"], 0),
+            "GDV (R)": round(selected_res["gdv"], 0),
+            "RLV (R)": round(selected_res["rlv"], 0),
+            "Effective bonus (%)": round(selected_res["adj_bonus_pct"], 2),
+            "Fees rate (%)": round(selected_res["adj_fees_rate"] * 100, 2),
+            "Profit rate (%)": round(selected_res["adj_profit_rate"] * 100, 2),
+            "%GDV scope (calc logic)": pct_gdv_scope,
+        }
+    )
 
 with st.expander("View exit price database (2026 estimates)"):
     st.dataframe(load_exit_price_db(), use_container_width=True)

@@ -1,10 +1,6 @@
 import streamlit as st
 import streamlit.components.v1 as components
 
-# Prefer secrets, fallback to your provided URL
-DEFAULT_CITYMAP_URL = "https://citymaps.capetown.gov.za/EGISViewer/"
-CITYMAP_VIEWER_URL = st.secrets.get("CITYMAP_VIEWER_URL", DEFAULT_CITYMAP_URL)
-
 import pandas as pd
 import plotly.graph_objects as go
 from dataclasses import dataclass
@@ -15,21 +11,47 @@ import os
 # BRAND / ASSETS
 # =========================
 ASSETS_DIR = "assets"
+
+# Prefer a square icon for favicon/tab icon
+FAVICON_CANDIDATES = [
+    os.path.join(ASSETS_DIR, "residuo_D_glyph_transparent_256_clean.png"),
+    os.path.join(ASSETS_DIR, "residuo_D_icon_256.png"),
+    os.path.join(ASSETS_DIR, "residuo_icon.png"),
+]
+
+# Prefer a wide/brand image for header
 BRAND_LOGO_CANDIDATES = [
     os.path.join(ASSETS_DIR, "residuo_brand.png"),
     os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_darktext_1200w_clean.png"),
     os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_lighttext_1200w_clean.png"),
+    os.path.join(ASSETS_DIR, "residuo_D_glyph_transparent_256_clean.png"),
     os.path.join(ASSETS_DIR, "residuo_icon.png"),
     os.path.join(ASSETS_DIR, "residuo_D_icon_256.png"),
 ]
 
-def pick_logo_path() -> str | None:
-    for p in BRAND_LOGO_CANDIDATES:
+def pick_existing(paths: list[str]) -> str | None:
+    for p in paths:
         if os.path.exists(p):
             return p
     return None
 
-LOGO_PATH = pick_logo_path()
+FAVICON_PATH = pick_existing(FAVICON_CANDIDATES)
+LOGO_PATH = pick_existing(BRAND_LOGO_CANDIDATES)
+
+# =========================
+# CITY MAP VIEWER
+# =========================
+DEFAULT_CITYMAP_URL = "https://citymaps.capetown.gov.za/EGISViewer/"
+CITYMAP_VIEWER_URL = st.secrets.get("CITYMAP_VIEWER_URL", DEFAULT_CITYMAP_URL)
+
+# =========================
+# PAGE (favicon here)
+# =========================
+st.set_page_config(
+    page_title="ResiDuo — Cape Town Feasibility",
+    layout="wide",
+    page_icon=FAVICON_PATH if FAVICON_PATH else "🏗️",
+)
 
 # =========================
 # CONFIG
@@ -45,15 +67,12 @@ ZONING_PRESETS = {
 DC_BASE_RATE = 514.10
 ROADS_TRANSPORT_PORTION = 285.35
 
-# 2026 hard cost tiers
 COST_TIERS = {
     "Economic (R10,000/m²)": 10000.0,
     "Mid-Tier (R18,000/m²)": 18000.0,
     "Luxury (R25,000+/m²)": 25000.0,
 }
 
-# 2026 sectional title exit price ranges (per sellable m²)
-# Note: Clifton/Bantry Bay upper assumed 170,000 due to truncated image.
 DEFAULT_EXIT_PRICES = [
     {"suburb": "Clifton / Bantry Bay", "min_price_per_m2": 120000, "max_price_per_m2": 170000},
     {"suburb": "Sea Point / Green Point", "min_price_per_m2": 65000, "max_price_per_m2": 85000},
@@ -66,7 +85,6 @@ DEFAULT_EXIT_PRICES = [
 
 IH_PRICE_PER_SELLABLE_M2 = 15000
 
-# Professional fee ranges (from your image)
 PROF_FEE_RANGES = {
     "Architect": (0.05, 0.07),
     "Quantity Surveyor (QS)": (0.02, 0.03),
@@ -75,14 +93,11 @@ PROF_FEE_RANGES = {
     "Electrical/Mech Engineer": (0.01, 0.02),
     "Project Manager": (0.02, 0.03),
 }
-PROF_FEE_TARGET_TOTAL = 0.135  # midpoint of ~12–15%
+PROF_FEE_TARGET_TOTAL = 0.135
 
 # =========================
-# PAGE
+# HEADER WITH LOGO
 # =========================
-st.set_page_config(page_title="ResiDuo — Cape Town Feasibility", layout="wide")
-
-# Header with logo
 h1, h2 = st.columns([0.22, 0.78])
 with h1:
     if LOGO_PATH:
@@ -97,11 +112,10 @@ with h2:
 @dataclass(frozen=True)
 class HeritageOverlay:
     enabled: bool
-    bonus_suppression_pct: float  # suppresses density bonus
-    cost_uplift_pct: float        # uplifts construction input
-    fees_uplift_pct: float        # uplifts total professional fee rate
-    profit_uplift_pct: float      # uplifts profit % of GDV
-
+    bonus_suppression_pct: float
+    cost_uplift_pct: float
+    fees_uplift_pct: float
+    profit_uplift_pct: float
 
 def apply_heritage_overlay(
     density_bonus_pct: float,
@@ -112,13 +126,11 @@ def apply_heritage_overlay(
 ) -> tuple[float, float, float, float]:
     if not overlay.enabled:
         return density_bonus_pct, base_cost_value, base_fees_rate, base_profit_rate
-
     adj_bonus = max(0.0, density_bonus_pct * (1.0 - overlay.bonus_suppression_pct / 100.0))
     adj_cost = base_cost_value * (1.0 + overlay.cost_uplift_pct / 100.0)
     adj_fees = base_fees_rate * (1.0 + overlay.fees_uplift_pct / 100.0)
     adj_profit = base_profit_rate * (1.0 + overlay.profit_uplift_pct / 100.0)
     return adj_bonus, adj_cost, adj_fees, adj_profit
-
 
 # =========================
 # HELPERS
@@ -126,12 +138,7 @@ def apply_heritage_overlay(
 def pt_discount(pt_zone_value: str) -> float:
     return {"PT1": 0.8, "PT2": 0.5}.get(pt_zone_value, 1.0)
 
-
 def normalize_exit_price_db(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ensure columns: suburb, min_price_per_m2, max_price_per_m2
-    Migrate: suburb, exit_price_per_m2 -> min=max
-    """
     if df is None or df.empty:
         return pd.DataFrame(DEFAULT_EXIT_PRICES)
 
@@ -169,13 +176,11 @@ def normalize_exit_price_db(df: pd.DataFrame) -> pd.DataFrame:
 
     return df[["suburb", "min_price_per_m2", "max_price_per_m2"]].reset_index(drop=True)
 
-
 def load_exit_price_db() -> pd.DataFrame:
     if "exit_price_db" not in st.session_state:
         st.session_state.exit_price_db = pd.DataFrame(DEFAULT_EXIT_PRICES)
     st.session_state.exit_price_db = normalize_exit_price_db(st.session_state.exit_price_db)
     return st.session_state.exit_price_db
-
 
 def set_exit_price_db_from_upload(uploaded_file) -> tuple[bool, str]:
     try:
@@ -188,7 +193,6 @@ def set_exit_price_db_from_upload(uploaded_file) -> tuple[bool, str]:
     except Exception as e:
         return False, f"Failed to load CSV: {e}"
 
-
 def default_prof_fee_components_scaled_to_target() -> dict[str, float]:
     mids = {k: (v[0] + v[1]) / 2.0 for k, v in PROF_FEE_RANGES.items()}
     s = sum(mids.values())
@@ -197,10 +201,8 @@ def default_prof_fee_components_scaled_to_target() -> dict[str, float]:
     scale = PROF_FEE_TARGET_TOTAL / s
     return {k: mids[k] * scale for k in mids}
 
-
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
-
 
 def compute_market_price_from_db(db: pd.DataFrame, suburb: str, price_point: str) -> tuple[float | None, float | None, float | None]:
     if not suburb or db.empty:
@@ -217,7 +219,6 @@ def compute_market_price_from_db(db: pd.DataFrame, suburb: str, price_point: str
     else:
         p = (mn + mx) / 2.0
     return p, mn, mx
-
 
 def compute_model(inputs: dict) -> dict:
     zoning_key = inputs["zoning_key"]
@@ -241,7 +242,7 @@ def compute_model(inputs: dict) -> dict:
         profit_uplift_pct=float(inputs["heritage_profit_uplift"]),
     )
 
-    cost_mode = inputs["cost_mode"]  # "R / m²" or "% of GDV"
+    cost_mode = inputs["cost_mode"]
     pct_gdv_scope = inputs["pct_gdv_scope"]
     base_cost_sqm = float(inputs["const_cost_sqm"])
     base_cost_pct_gdv = float(inputs["const_cost_pct_gdv"])
@@ -302,17 +303,9 @@ def compute_model(inputs: dict) -> dict:
     profit = gdv * adj_profit_rate
     rlv = gdv - (construction_costs + total_dc + prof_fees + profit)
 
-    implied_cost_sqm = (construction_costs / proposed_bulk) if proposed_bulk > 0 else 0.0
-
     return {
-        "base_bulk": base_bulk,
         "proposed_bulk": proposed_bulk,
         "proposed_sellable": proposed_sellable,
-        "net_increase_bulk": net_increase_bulk,
-        "ih_sellable": ih_sellable,
-        "market_sellable": market_sellable,
-        "market_price": market_price,
-        "ih_price": ih_price,
         "gdv": gdv,
         "construction_costs": construction_costs,
         "total_dc": total_dc,
@@ -324,54 +317,11 @@ def compute_model(inputs: dict) -> dict:
         "adj_bonus": adj_bonus,
         "adj_fee_rate": adj_fee_rate,
         "adj_profit_rate": adj_profit_rate,
-        "cost_mode": cost_mode,
-        "pct_gdv_scope": pct_gdv_scope,
-        "adj_cost_sqm": adj_cost_sqm,
-        "adj_cost_pct_gdv": adj_cost_pct_gdv,
-        "implied_cost_sqm": implied_cost_sqm,
         "efficiency": efficiency,
     }
 
-
 def fmt_money(x: float) -> str:
     return f"R {x:,.0f}"
-
-
-def fmt_pct(x: float) -> str:
-    return f"{x*100:.2f}%"
-
-
-def build_audit_table(inputs: dict, res: dict) -> pd.DataFrame:
-    rows = [
-        ("Zoning preset", inputs["zoning_key"]),
-        ("Land area (m²)", f"{inputs['land_area']:,.0f}"),
-        ("Existing GBA (bulk m²)", f"{inputs['existing_gba']:,.0f}"),
-        ("Density bonus (input)", f"{inputs['density_bonus']:.1f}%"),
-        ("Efficiency (sellable/bulk)", f"{inputs['efficiency_ratio']*100:.0f}%"),
-        ("IH % (net increase)", f"{inputs['ih_percent']:.0f}%"),
-        ("PT zone", inputs["pt_zone"]),
-        ("Market price (sellable m²)", fmt_money(inputs["market_price"])),
-        ("IH price (sellable m²)", fmt_money(inputs.get("ih_price", IH_PRICE_PER_SELLABLE_M2))),
-        ("Hard cost mode", inputs["cost_mode"]),
-        ("Hard cost (R/m² bulk)", fmt_money(inputs["const_cost_sqm"]) if inputs["cost_mode"] == "R / m²" else "—"),
-        ("Hard cost (%GDV)", f"{inputs['const_cost_pct_gdv']*100:.1f}%" if inputs["cost_mode"] == "% of GDV" else "—"),
-        ("%GDV scope", inputs["pct_gdv_scope"] if inputs["cost_mode"] == "% of GDV" else "—"),
-        ("Prof fees (total)", fmt_pct(inputs["prof_fee_total"])),
-        ("Profit (target)", fmt_pct(inputs["profit_margin"])),
-        ("Overlay: heritage enabled", "Yes" if inputs["heritage_enabled"] else "No"),
-        ("—", "—"),
-        ("Proposed bulk (m²)", f"{res['proposed_bulk']:,.0f}"),
-        ("Proposed sellable (m²)", f"{res['proposed_sellable']:,.0f}"),
-        ("GDV", fmt_money(res["gdv"])),
-        ("Construction costs", fmt_money(res["construction_costs"])),
-        ("Development charges (DC)", fmt_money(res["total_dc"])),
-        ("Professional fees", fmt_money(res["prof_fees"])),
-        ("Developer profit", fmt_money(res["profit"])),
-        ("Residual land value (RLV)", fmt_money(res["rlv"])),
-        ("DC savings vs full DC", fmt_money(res["dc_savings"])),
-    ]
-    return pd.DataFrame(rows, columns=["Item", "Value"])
-
 
 def diff_inputs(current: dict, compare: dict) -> pd.DataFrame:
     keys = [
@@ -389,19 +339,13 @@ def diff_inputs(current: dict, compare: dict) -> pd.DataFrame:
         b = compare.get(k)
         if a == b:
             continue
-
         def norm(x):
             if isinstance(x, float):
                 return round(x, 6)
             return x
-
         rows.append([k, norm(b), norm(a)])
     return pd.DataFrame(rows, columns=["Parameter", "Compare scenario", "Current"])
 
-
-# =========================
-# STATE INIT
-# =========================
 def default_inputs() -> dict:
     db = load_exit_price_db()
     suburbs = sorted(db["suburb"].tolist())
@@ -415,40 +359,27 @@ def default_inputs() -> dict:
     prof_total = sum(fee_defaults.values())
 
     return {
-        # Site
         "land_area": 1000.0,
         "existing_gba": 200.0,
         "zoning_key": "GR2 (Suburban)",
         "pt_zone": "Standard",
-
-        # Policy
         "ih_percent": 20.0,
         "density_bonus": 20.0,
-
-        # Benchmarks
         "efficiency_ratio": 0.85,
         "profit_margin": 0.20,
-
-        # Prices
         "exit_price_source": "Suburb database",
         "selected_suburb": default_suburb,
         "price_point": price_point,
         "market_price": float(auto_price),
         "ih_price": float(IH_PRICE_PER_SELLABLE_M2),
         "override_market_price": False,
-
-        # Fees
         "prof_fee_components": fee_defaults,
         "prof_fee_total": float(prof_total),
-
-        # Cost input
         "build_tier": "Mid-Tier (R18,000/m²)",
         "cost_mode": "R / m²",
         "const_cost_sqm": float(COST_TIERS["Mid-Tier (R18,000/m²)"]),
         "const_cost_pct_gdv": 0.50,
         "pct_gdv_scope": "Hard cost only",
-
-        # Heritage overlay
         "heritage_enabled": False,
         "heritage_bonus_suppression": 50.0,
         "heritage_cost_uplift": 8.0,
@@ -456,7 +387,9 @@ def default_inputs() -> dict:
         "heritage_profit_uplift": 5.0,
     }
 
-
+# =========================
+# STATE INIT
+# =========================
 if "scenarios" not in st.session_state:
     base = default_inputs()
     st.session_state.scenarios = {
@@ -578,7 +511,6 @@ with left:
             inputs["heritage_fees_uplift"] = float(st.slider("Fees uplift (%)", 0, 40, int(inputs.get("heritage_fees_uplift", 5)), disabled=dis))
             inputs["heritage_profit_uplift"] = float(st.slider("Profit uplift (%)", 0, 40, int(inputs.get("heritage_profit_uplift", 5)), disabled=dis))
 
-        # ---- APPLY PATTERN: two submit buttons ----
         cA, cB = st.columns(2)
         with cA:
             apply_only = st.form_submit_button("Apply without saving", use_container_width=True)
@@ -587,18 +519,14 @@ with left:
 
     if apply_only or save_and_apply:
         st.session_state.active_inputs = deepcopy(inputs)
-
         if save_and_apply:
-            # Save into currently selected scenario (right panel selector determines active_scenario)
             scen = st.session_state.active_scenario
             st.session_state.scenarios[scen] = deepcopy(inputs)
             st.toast(f"Saved → {scen} and applied", icon="💾")
         else:
             st.toast("Applied (not saved)", icon="✅")
-
         st.rerun()
 
-    # ---- Exit DB management (OUTSIDE the form) ----
     with st.expander("📦 Exit price database (upload / reset)", expanded=False):
         up = st.file_uploader("Upload CSV (suburb + min/max or exit_price_per_m2)", type=["csv"], key="exit_db_uploader")
         if up is not None:
@@ -616,9 +544,8 @@ with left:
 
         st.dataframe(load_exit_price_db(), use_container_width=True, hide_index=True)
 
-
 # -------------------------
-# MID: OUTPUTS (dashboard)
+# MID: OUTPUTS
 # -------------------------
 with mid:
     active_inputs = deepcopy(st.session_state.active_inputs)
@@ -700,18 +627,16 @@ with mid:
     hm.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=320)
     st.plotly_chart(hm, use_container_width=True)
 
-
 # -------------------------
-# RIGHT: SCENARIOS + AUDIT + MAP
+# RIGHT: SCENARIOS + MAP
 # -------------------------
 with right:
-    st.subheader("Scenarios & Audit")
+    st.subheader("Scenarios")
 
     scenarios = st.session_state.scenarios
     scenario_names = list(scenarios.keys())
 
     sel = st.selectbox("Scenario", scenario_names, index=scenario_names.index(st.session_state.active_scenario))
-    # Keep active scenario in sync with selector
     st.session_state.active_scenario = sel
 
     b1, b2, b3 = st.columns(3)
@@ -733,19 +658,11 @@ with right:
 
     st.markdown("**Compare**")
     compare_to = st.selectbox("Compare current vs", scenario_names, index=scenario_names.index(sel))
-    compare_inputs = scenarios[compare_to]
-    current_inputs = st.session_state.active_inputs
-
-    df_diff = diff_inputs(current_inputs, compare_inputs)
+    df_diff = diff_inputs(st.session_state.active_inputs, scenarios[compare_to])
     if df_diff.empty:
         st.caption("No differences vs selected compare scenario.")
     else:
         st.dataframe(df_diff, use_container_width=True, hide_index=True)
-
-    st.markdown("**Audit trail**")
-    active_res = compute_model(current_inputs)
-    audit_df = build_audit_table(current_inputs, active_res)
-    st.dataframe(audit_df, use_container_width=True, hide_index=True)
 
     with st.expander("🗺️ City Map Viewer", expanded=False):
         st.link_button("Open in new tab", CITYMAP_VIEWER_URL)

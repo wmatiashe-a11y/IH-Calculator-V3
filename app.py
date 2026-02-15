@@ -7,7 +7,10 @@
 # ✅ Scenario breakdown includes IH exit price (R/m² sellable)
 # ✅ IH exit price slider under "2) Policy" (R10k–R30k)
 # ✅ Bankability gauge replaces waterfall
-# ✅ FIX: Selected scenario under sensitivity now recalculates LIVE from current inputs
+# ✅ Selected scenario under sensitivity recalculates LIVE
+# ✅ NEW: Selected scenario now follows policy sliders (IH% + Density Bonus) by default
+#        - clicking a heatmap cell pins the selection
+#        - moving policy sliders unpins and resumes following sliders
 
 import os
 from dataclasses import dataclass
@@ -479,7 +482,6 @@ def make_bankability_gauge(
     fig.add_shape(type="line", x0=tier_n, x1=tier_n, y0=y[2]-0.35, y1=y[2]+0.35, xref="x", yref="y",
                   line=dict(width=2, dash="dot"))
 
-    # labels + values
     annotations = [
         dict(x=0.0, y=y[0], xref="x", yref="y", text=labels[0], showarrow=False, xanchor="left", yanchor="middle"),
         dict(x=0.0, y=y[1], xref="x", yref="y", text=labels[1], showarrow=False, xanchor="left", yanchor="middle"),
@@ -757,7 +759,7 @@ with st.expander("🗺️ City of Cape Town Map Viewer", expanded=False):
 
 # =========================
 # SENSITIVITY HEATMAP (clickable + metric dropdown)
-# ✅ Selected scenario now recalculates LIVE from current sidebar inputs
+# ✅ Selected scenario now follows policy sliders by default
 # =========================
 st.markdown('<div class="section-title">Sensitivity analysis</div>', unsafe_allow_html=True)
 st.caption("Choose a metric, then click a cell to pin and inspect the scenario (IH % × Density Bonus).")
@@ -777,6 +779,50 @@ with st.expander("Heatmap settings", expanded=False):
 ih_levels = list(range(0, ih_max + 1, ih_step))
 bonus_levels = list(range(0, bonus_max + 1, bonus_step))
 
+
+def _nearest_level(val: float, levels: list[int]) -> int:
+    if not levels:
+        return int(val)
+    return min(levels, key=lambda x: abs(x - float(val)))
+
+
+# ---- selection state that follows policy sliders by default ----
+if "sens_user_pinned" not in st.session_state:
+    st.session_state.sens_user_pinned = False
+
+if "sens_last_policy" not in st.session_state:
+    st.session_state.sens_last_policy = {"ih": float(ih_percent), "bonus": float(density_bonus)}
+
+policy_changed = (
+    float(st.session_state.sens_last_policy.get("ih", ih_percent)) != float(ih_percent)
+    or float(st.session_state.sens_last_policy.get("bonus", density_bonus)) != float(density_bonus)
+)
+
+# If policy toggles moved, unpin and follow sliders
+if policy_changed:
+    st.session_state.sens_user_pinned = False
+    st.session_state.sens_last_policy = {"ih": float(ih_percent), "bonus": float(density_bonus)}
+
+# Initialize selection
+if "sens_selected" not in st.session_state:
+    st.session_state.sens_selected = {
+        "ih": _nearest_level(ih_percent, ih_levels),
+        "bonus": _nearest_level(density_bonus, bonus_levels),
+    }
+
+# If not pinned, keep selection synced to the policy sliders
+if not st.session_state.sens_user_pinned:
+    st.session_state.sens_selected = {
+        "ih": _nearest_level(ih_percent, ih_levels),
+        "bonus": _nearest_level(density_bonus, bonus_levels),
+    }
+
+# Clamp to current grid (in case steps/ranges change)
+sel_ih = _nearest_level(st.session_state.sens_selected.get("ih", ih_percent), ih_levels)
+sel_bonus = _nearest_level(st.session_state.sens_selected.get("bonus", density_bonus), bonus_levels)
+st.session_state.sens_selected = {"ih": sel_ih, "bonus": sel_bonus}
+
+
 def _metric_value(res_: dict) -> float:
     """Return value in R millions for chosen heatmap metric.
     Costs (Hard+Soft) = construction + professional fees ONLY (never includes DCs).
@@ -788,6 +834,7 @@ def _metric_value(res_: dict) -> float:
     if metric.startswith("Profit"):
         return res_["profit"] / 1_000_000.0
     return (res_["construction_costs"] + res_["prof_fees"]) / 1_000_000.0
+
 
 # Build heatmap z using current inputs
 z = []
@@ -820,23 +867,6 @@ y_labels = [f"{i}% IH" for i in ih_levels]
 
 zmin = min(min(r) for r in z) if z else 0.0
 zmax = max(max(r) for r in z) if z else 0.0
-
-# Persist selection
-if "sens_selected" not in st.session_state:
-    st.session_state.sens_selected = {
-        "ih": ih_levels[min(2, len(ih_levels) - 1)],
-        "bonus": bonus_levels[min(1, len(bonus_levels) - 1)],
-    }
-
-sel_ih = st.session_state.sens_selected.get("ih")
-sel_bonus = st.session_state.sens_selected.get("bonus")
-
-# Clamp selection to current grid (in case user changes step/max)
-if sel_ih not in ih_levels:
-    sel_ih = ih_levels[min(2, len(ih_levels) - 1)]
-if sel_bonus not in bonus_levels:
-    sel_bonus = bonus_levels[min(1, len(bonus_levels) - 1)]
-st.session_state.sens_selected = {"ih": sel_ih, "bonus": sel_bonus}
 
 sel_x_label = f"{sel_bonus}% Bonus"
 sel_y_label = f"{sel_ih}% IH"
@@ -886,7 +916,7 @@ state = st.plotly_chart(
     on_select="rerun",
 )
 
-# Read click selection
+# Read click selection: pin on click
 points = []
 try:
     sel = getattr(state, "selection", None)
@@ -911,6 +941,7 @@ if points:
         new_ih = int(str(sy).split("%")[0])
         if new_ih in ih_levels and new_bonus in bonus_levels:
             st.session_state.sens_selected = {"ih": new_ih, "bonus": new_bonus}
+            st.session_state.sens_user_pinned = True  # ✅ pin on click
             sel_ih, sel_bonus = new_ih, new_bonus
     except Exception:
         pass
@@ -969,6 +1000,7 @@ with st.expander("Scenario breakdown (live)", expanded=False):
             "Fees rate (%)": round(selected_res["adj_fees_rate"] * 100, 2),
             "Profit rate (%)": round(selected_res["adj_profit_rate"] * 100, 2),
             "%GDV scope (calc logic)": pct_gdv_scope,
+            "Pinned by click?": bool(st.session_state.get("sens_user_pinned", False)),
         }
     )
 

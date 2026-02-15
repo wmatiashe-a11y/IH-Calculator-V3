@@ -8,6 +8,15 @@ CITYMAP_VIEWER_URL = st.secrets.get("CITYMAP_VIEWER_URL", DEFAULT_CITYMAP_URL)
 import pandas as pd
 import plotly.graph_objects as go
 from dataclasses import dataclass
+import os
+
+# =========================
+# BRAND / ASSETS
+# =========================
+ASSETS_DIR = "assets"
+LOGO_WORD_DARK = os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_darktext_1200w_clean.png")
+LOGO_WORD_LIGHT = os.path.join(ASSETS_DIR, "residuo_D_wordmark_transparent_lighttext_1200w_clean.png")
+LOGO_GLYPH = os.path.join(ASSETS_DIR, "residuo_D_glyph_transparent_256_clean.png")
 
 # =========================
 # CONFIG
@@ -22,8 +31,6 @@ ZONING_PRESETS = {
 
 DC_BASE_RATE = 514.10
 ROADS_TRANSPORT_PORTION = 285.35
-
-IH_PRICE_PER_M2 = 15000  # IH capped exit price (sellable m²)
 
 # 2026 hard cost tiers (benchmarks)
 COST_TIERS = {
@@ -53,11 +60,38 @@ PROF_FEE_RANGES = {
     "Electrical/Mech Engineer": (0.01, 0.02),
     "Project Manager": (0.02, 0.03),
 }
-# Target “2026 average total” per image (~12–15%) => midpoint 13.5%
-PROF_FEE_TARGET_TOTAL = 0.135
+PROF_FEE_TARGET_TOTAL = 0.135  # midpoint of ~12–15%
 
-st.set_page_config(page_title="Residuo — Cape Town Feasibility", layout="wide")
-st.title("🏗️ Residuo — Cape Town Feasibility (Wizard + Live Dashboard)")
+st.set_page_config(
+    page_title="Residuo — Cape Town Feasibility",
+    layout="wide",
+    page_icon=LOGO_GLYPH if os.path.exists(LOGO_GLYPH) else "🏗️",
+)
+
+# =========================
+# UI: HEADER (LOGO)
+# =========================
+top_l, top_r = st.columns([0.55, 0.45])
+with top_l:
+    # Prefer dark wordmark on light theme; fallback to glyph; then emoji title
+    if os.path.exists(LOGO_WORD_DARK):
+        st.image(LOGO_WORD_DARK, width=260)
+        st.caption("Unlock Land's True Value • Cape Town Feasibility")
+    elif os.path.exists(LOGO_GLYPH):
+        c1, c2 = st.columns([0.12, 0.88])
+        with c1:
+            st.image(LOGO_GLYPH, width=54)
+        with c2:
+            st.title("Residuo — Cape Town Feasibility")
+            st.caption("Unlock Land's True Value")
+    else:
+        st.title("🏗️ Residuo — Cape Town Feasibility")
+        st.caption("Unlock Land's True Value")
+
+with top_r:
+    st.markdown("")  # spacer
+
+st.divider()
 
 # =========================
 # OVERLAYS
@@ -96,16 +130,11 @@ def pt_discount(pt_zone_value: str) -> float:
 
 
 def normalize_exit_price_db(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ensures DB has: suburb, min_price_per_m2, max_price_per_m2
-    Migrates old schema (exit_price_per_m2) -> min=max.
-    """
     if df is None or df.empty:
         return pd.DataFrame(DEFAULT_EXIT_PRICES)
 
     df = df.copy()
     col_map = {c.lower().strip(): c for c in df.columns}
-
     if "suburb" not in col_map:
         return pd.DataFrame(DEFAULT_EXIT_PRICES)
 
@@ -127,7 +156,6 @@ def normalize_exit_price_db(df: pd.DataFrame) -> pd.DataFrame:
     df["suburb"] = df[suburb_col].astype(str).str.strip()
     df["min_price_per_m2"] = pd.to_numeric(df["min_price_per_m2"], errors="coerce")
     df["max_price_per_m2"] = pd.to_numeric(df["max_price_per_m2"], errors="coerce")
-
     df = df.dropna(subset=["suburb", "min_price_per_m2", "max_price_per_m2"])
     df = df.sort_values("suburb").drop_duplicates(subset=["suburb"], keep="last")
 
@@ -160,9 +188,6 @@ def set_exit_price_db_from_upload(uploaded_file) -> tuple[bool, str]:
 
 
 def default_prof_fee_components_scaled_to_target() -> dict[str, float]:
-    """
-    Uses midpoints of each range, then scales all components so the sum equals 13.5% (target).
-    """
     mids = {k: (v[0] + v[1]) / 2.0 for k, v in PROF_FEE_RANGES.items()}
     s = sum(mids.values())
     if s <= 0:
@@ -172,9 +197,6 @@ def default_prof_fee_components_scaled_to_target() -> dict[str, float]:
 
 
 def compute_market_price(db: pd.DataFrame) -> tuple[float, dict]:
-    """
-    Returns (market_price, meta)
-    """
     src = st.session_state.get("exit_price_source", "Suburb database")
 
     if src == "Manual entry":
@@ -186,7 +208,6 @@ def compute_market_price(db: pd.DataFrame) -> tuple[float, dict]:
             "point": None,
         }
 
-    # Suburb DB mode
     suburbs = sorted(db["suburb"].dropna().astype(str).unique().tolist())
     suburb = st.session_state.get("selected_suburb", suburbs[0] if suburbs else None)
     point = st.session_state.get("price_point", "Mid")
@@ -222,18 +243,18 @@ def compute_model(
     existing_gba_bulk_m2: float,
     ff: float,
     density_bonus_pct: float,
-    efficiency_ratio: float,  # sellable/bulk
+    efficiency_ratio: float,
     ih_pct: float,
     pt_zone_value: str,
     market_price_per_sellable_m2: float,
-    ih_price_per_sellable_m2: float,
+    ih_price_per_sellable_m2: float,  # <-- IH exit price is now explicit input
     profit_pct_gdv: float,
-    base_prof_fee_rate: float,  # total prof fee rate
+    base_prof_fee_rate: float,
     overlay: HeritageOverlay,
-    cost_mode: str,             # "R / m²" or "% of GDV"
-    base_cost_sqm: float,       # if "R / m²"
-    base_cost_pct_gdv: float,   # if "% of GDV"
-    pct_gdv_scope: str,         # "Hard cost only" or "Hard + soft"
+    cost_mode: str,
+    base_cost_sqm: float,
+    base_cost_pct_gdv: float,
+    pct_gdv_scope: str,
 ):
     base_bulk = land_area_m2 * ff
 
@@ -249,17 +270,14 @@ def compute_model(
     proposed_bulk = base_bulk * (1.0 + adj_bonus_pct / 100.0)
     proposed_sellable = proposed_bulk * efficiency_ratio
 
-    # Brownfield credit / net increase (bulk)
     net_increase_bulk = max(0.0, proposed_bulk - existing_gba_bulk_m2)
 
-    # IH split on net increase bulk (for DC logic); revenue uses sellable
     ih_increase_bulk = net_increase_bulk * (ih_pct / 100.0)
     market_increase_bulk = net_increase_bulk - ih_increase_bulk
 
     ih_sellable = ih_increase_bulk * efficiency_ratio
     market_sellable = max(0.0, proposed_sellable - ih_sellable)
 
-    # DCs on market share of net increase (bulk)
     disc = pt_discount(pt_zone_value)
     roads_dc = market_increase_bulk * ROADS_TRANSPORT_PORTION * disc
     other_dc = market_increase_bulk * (DC_BASE_RATE - ROADS_TRANSPORT_PORTION)
@@ -268,27 +286,22 @@ def compute_model(
     total_potential_dc = net_increase_bulk * DC_BASE_RATE
     dc_savings = total_potential_dc - total_dc
 
-    # Revenue on sellable
     gdv = (market_sellable * market_price_per_sellable_m2) + (ih_sellable * ih_price_per_sellable_m2)
-
-    # Costs
-    adj_cost_sqm = None
-    adj_cost_pct_gdv = None
 
     if cost_mode == "R / m²":
         adj_cost_sqm = adj_cost_input
         construction_costs = proposed_bulk * adj_cost_sqm
         hard_plus_dc = construction_costs + total_dc
         prof_fees = hard_plus_dc * adj_fees_rate
+        adj_cost_pct_gdv = None
     else:
         adj_cost_pct_gdv = adj_cost_input
-
+        adj_cost_sqm = None
         if pct_gdv_scope == "Hard cost only":
             construction_costs = gdv * adj_cost_pct_gdv
             hard_plus_dc = construction_costs + total_dc
             prof_fees = hard_plus_dc * adj_fees_rate
         else:
-            # If %GDV represents (construction + prof fees) all-in, solve without double counting:
             target_all_in = gdv * adj_cost_pct_gdv
             construction_costs = (target_all_in - (adj_fees_rate * total_dc)) / (1.0 + adj_fees_rate)
             construction_costs = max(0.0, construction_costs)
@@ -324,6 +337,7 @@ def compute_model(
         "adj_cost_pct_gdv": adj_cost_pct_gdv,
         "implied_cost_sqm": implied_cost_sqm,
         "efficiency_ratio": float(efficiency_ratio),
+        "ih_exit_price": float(ih_price_per_sellable_m2),
     }
 
 
@@ -331,12 +345,7 @@ def fmt_money(x: float) -> str:
     return f"R {x:,.0f}"
 
 
-def fmt_money2(x: float) -> str:
-    return f"R {x:,.2f}"
-
-
 def init_defaults():
-    # Wizard state
     st.session_state.setdefault("wizard_step", "1) Site")
 
     # Site
@@ -360,6 +369,9 @@ def init_defaults():
     st.session_state.setdefault("market_price_override", 35000.0)
     st.session_state.setdefault("market_price_manual", 35000.0)
 
+    # IH exit price (explicit)
+    st.session_state.setdefault("ih_exit_price", 15000.0)
+
     # Costs
     st.session_state.setdefault("cost_mode", "R / m²")
     st.session_state.setdefault("pct_gdv_scope", "Hard cost only")
@@ -367,7 +379,7 @@ def init_defaults():
     st.session_state.setdefault("const_cost_sqm", COST_TIERS["Mid-Tier (R18,000/m²)"])
     st.session_state.setdefault("const_cost_pct_gdv", 0.50)
 
-    # Fees (components default scaled)
+    # Fees
     defaults = default_prof_fee_components_scaled_to_target()
     for k in PROF_FEE_RANGES.keys():
         st.session_state.setdefault(f"fee_{k}", float(defaults[k]))
@@ -383,7 +395,7 @@ def init_defaults():
 init_defaults()
 
 # =========================
-# OPTION B LAYOUT
+# OPTION B: Wizard + Live Dashboard
 # =========================
 left, right = st.columns([0.38, 0.62], gap="large")
 
@@ -404,7 +416,6 @@ with left:
         "8) Review",
     ]
     st.radio("Step", steps, key="wizard_step")
-
     step = st.session_state["wizard_step"]
     db = load_exit_price_db()
 
@@ -430,11 +441,17 @@ with left:
         st.slider("Efficiency Ratio (sellable ÷ bulk)", 0.60, 0.95, step=0.01, key="efficiency_ratio")
         st.slider("Developer Profit (as % of GDV)", 0.10, 0.30, step=0.01, key="profit_margin")
 
-        st.caption("Profit default is **20%** (often required by SA development lenders).")
+        st.markdown("**IH exit price (sellable m²)**")
+        st.number_input(
+            "IH Exit Price (R/m²)",
+            min_value=0.0,
+            step=500.0,
+            key="ih_exit_price",
+            help="Used for the Inclusionary Housing portion of revenue. Default set to R15,000/m².",
+        )
 
     elif step == "4) Exit Prices":
         st.markdown("**Market exit price (sellable m²)**")
-
         st.radio("Source", ["Suburb database", "Manual entry"], key="exit_price_source")
 
         with st.expander("Upload exit price CSV (optional)", expanded=False):
@@ -458,7 +475,6 @@ with left:
                 st.radio("Point in range", ["Low", "Mid", "High"], horizontal=True, key="price_point")
                 st.checkbox("Override suburb price", key="override_suburb_price")
 
-                # Show current DB range
                 suburb = st.session_state.get("selected_suburb")
                 row = db.loc[db["suburb"] == suburb]
                 if not row.empty:
@@ -480,7 +496,6 @@ with left:
     elif step == "5) Professional Fees":
         st.markdown("**Professional fees (2026 ranges)**")
         st.caption("Defaults are scaled to a **total ~13.5%** (midpoint of ~12–15%).")
-
         with st.expander("Fee components", expanded=True):
             for name, (lo, hi) in PROF_FEE_RANGES.items():
                 st.slider(
@@ -490,13 +505,11 @@ with left:
                     step=0.1,
                     key=f"fee_{name}",
                 )
-
         total_fees = sum(float(st.session_state[f"fee_{k}"]) for k in PROF_FEE_RANGES.keys())
         st.success(f"Total professional fees: **{total_fees*100:.2f}%**")
 
     elif step == "6) Construction Costs":
         st.markdown("**Construction cost inputs**")
-
         st.radio("Cost input mode", ["R / m²", "% of GDV"], key="cost_mode")
 
         if st.session_state["cost_mode"] == "% of GDV":
@@ -504,7 +517,6 @@ with left:
             st.slider("Construction Cost (% of GDV)", 0.10, 0.90, step=0.01, key="const_cost_pct_gdv")
         else:
             st.selectbox("Hard Cost Tier (2026)", list(COST_TIERS.keys()), key="build_tier")
-            # If user hasn’t manually changed const_cost_sqm, keep it aligned with tier
             tier_val = COST_TIERS[st.session_state["build_tier"]]
             if "const_cost_sqm_touched" not in st.session_state:
                 st.session_state["const_cost_sqm"] = float(tier_val)
@@ -531,12 +543,8 @@ with left:
 
     elif step == "8) Review":
         st.markdown("**Review key inputs**")
-
-        db = load_exit_price_db()
         market_price, price_meta = compute_market_price(db)
-
         total_fees = sum(float(st.session_state[f"fee_{k}"]) for k in PROF_FEE_RANGES.keys())
-
         st.write(
             {
                 "Land area (m²)": float(st.session_state["land_area"]),
@@ -547,6 +555,7 @@ with left:
                 "Density bonus %": int(st.session_state["density_bonus"]),
                 "Efficiency %": round(float(st.session_state["efficiency_ratio"]) * 100, 0),
                 "Profit %GDV": round(float(st.session_state["profit_margin"]) * 100, 1),
+                "IH exit price (R/m²)": float(st.session_state["ih_exit_price"]),
                 "Exit price mode": price_meta["mode"],
                 "Selected suburb": price_meta.get("suburb"),
                 "Exit price used (R/m² sellable)": round(float(market_price), 0),
@@ -563,7 +572,6 @@ with left:
 # RIGHT: Live Dashboard
 # =========================
 with right:
-    # Gather inputs for model
     db = load_exit_price_db()
     market_price, price_meta = compute_market_price(db)
 
@@ -586,6 +594,8 @@ with right:
     const_cost_sqm = float(st.session_state.get("const_cost_sqm", COST_TIERS["Mid-Tier (R18,000/m²)"]))
     const_cost_pct_gdv = float(st.session_state.get("const_cost_pct_gdv", 0.50))
 
+    ih_exit_price = float(st.session_state.get("ih_exit_price", 15000.0))
+
     res = compute_model(
         land_area_m2=float(st.session_state["land_area"]),
         existing_gba_bulk_m2=float(st.session_state["existing_gba"]),
@@ -595,7 +605,7 @@ with right:
         ih_pct=float(st.session_state["ih_percent"]),
         pt_zone_value=st.session_state["pt_zone"],
         market_price_per_sellable_m2=float(market_price),
-        ih_price_per_sellable_m2=float(IH_PRICE_PER_M2),
+        ih_price_per_sellable_m2=float(ih_exit_price),
         profit_pct_gdv=float(st.session_state["profit_margin"]),
         base_prof_fee_rate=float(total_prof_fee_rate),
         overlay=heritage_overlay,
@@ -605,13 +615,11 @@ with right:
         pct_gdv_scope=pct_gdv_scope,
     )
 
-    # Mini "last change impact"
     prev_rlv = st.session_state.get("_prev_rlv")
     delta_rlv = None if prev_rlv is None else (res["rlv"] - prev_rlv)
 
     st.subheader("📊 Live Dashboard")
 
-    # KPI strip
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Residual Land Value", fmt_money(res["rlv"]), delta=None if delta_rlv is None else fmt_money(delta_rlv))
     k2.metric("GDV (Market + IH)", fmt_money(res["gdv"]))
@@ -619,33 +627,31 @@ with right:
     k4.metric("DC Savings", fmt_money(res["dc_savings"]))
 
     k5, k6, k7, k8 = st.columns(4)
-    k5.metric("Profit (20% default)", fmt_money(res["profit"]))
-    k6.metric("Prof Fees (sum)", fmt_money(res["prof_fees"]))
+    k5.metric("Profit", fmt_money(res["profit"]))
+    k6.metric("Prof Fees", fmt_money(res["prof_fees"]))
     k7.metric("Proposed Bulk (m²)", f"{res['proposed_bulk']:,.0f}")
     k8.metric("Sellable (m²)", f"{res['proposed_sellable']:,.0f}")
 
-    # Assumptions chips
     chips = []
     chips.append(f"Zoning: {zoning_key}")
     chips.append(f"Efficiency: {res['efficiency_ratio']*100:.0f}%")
     chips.append(f"IH: {int(st.session_state['ih_percent'])}%")
     chips.append(f"Bonus: {int(st.session_state['density_bonus'])}% → eff {res['adj_bonus_pct']:.1f}%")
-    chips.append(f"Exit: {fmt_money(market_price)}/m² (sellable)")
+    chips.append(f"Market exit: {fmt_money(market_price)}/m²")
+    chips.append(f"IH exit: {fmt_money(ih_exit_price)}/m²")
     if cost_mode == "R / m²":
-        chips.append(f"Hard cost: {fmt_money(res['adj_cost_sqm'])}/m² (bulk)")
+        chips.append(f"Hard cost: {fmt_money(res['adj_cost_sqm'])}/m² bulk")
     else:
         chips.append(f"Cost: {res['adj_cost_pct_gdv']*100:.1f}% GDV ({pct_gdv_scope})")
     chips.append(f"Fees: {res['adj_fees_rate']*100:.2f}%")
     chips.append(f"Profit: {res['adj_profit_rate']*100:.1f}%")
     if heritage_overlay.enabled:
         chips.append("Heritage: ON")
-
     st.caption(" • ".join(chips))
 
     if res["brownfield_credit"]:
         st.warning("⚠️ Existing bulk exceeds proposed bulk. Net increase is zero; DCs should be zero (brownfield credit).")
 
-    # Waterfall
     fig = go.Figure(
         go.Waterfall(
             name="Residual Breakdown",
@@ -666,7 +672,6 @@ with right:
     fig.update_layout(margin=dict(l=10, r=10, t=30, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # Sensitivity (kept compact but consistent with engine)
     with st.expander("Sensitivity: IH % vs Density Bonus (2026-aware)", expanded=False):
         ih_levels = [0, 10, 20, 30]
         bonus_levels = [0, 20, 40]
@@ -684,7 +689,7 @@ with right:
                     ih_pct=float(ih),
                     pt_zone_value=st.session_state["pt_zone"],
                     market_price_per_sellable_m2=float(market_price),
-                    ih_price_per_sellable_m2=float(IH_PRICE_PER_M2),
+                    ih_price_per_sellable_m2=float(ih_exit_price),
                     profit_pct_gdv=float(st.session_state["profit_margin"]),
                     base_prof_fee_rate=float(total_prof_fee_rate),
                     overlay=heritage_overlay,
@@ -706,5 +711,4 @@ with right:
     with st.expander("Exit price database (2026 estimates)", expanded=False):
         st.dataframe(load_exit_price_db(), use_container_width=True)
 
-    # Update last value AFTER rendering
     st.session_state["_prev_rlv"] = float(res["rlv"])
